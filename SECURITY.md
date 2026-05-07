@@ -46,8 +46,8 @@ An OpenClaw notifier token (`1af5c4f...872` - redacted) was accidentally committ
 This repository uses [Gitleaks](https://github.com/gitleaks/gitleaks) to prevent accidental commits of secrets:
 
 1. **Pre-commit Hook** — Scans staged files before every commit
-2. **CI Pipeline** — Scans full git history on every push/PR
-3. **Scheduled Scans** — Weekly scans to catch new vulnerability patterns
+2. **Gitleaks PR Gate** — Scans full git history on pull requests, pushes to `main`, and manual dispatch
+3. **Scheduled Security Workflow** — Runs dependency security checks weekly
 
 ### Dependency Security
 
@@ -133,7 +133,7 @@ gitleaks detect --no-git
 gitleaks protect --staged
 
 # Scan full git history
-gitleaks detect
+gitleaks git --redact --verbose .
 ```
 
 ### What to Do If You Commit a Secret
@@ -142,7 +142,7 @@ If you accidentally commit a secret:
 
 1. **Rotate the secret immediately** — Assume it's compromised
 2. **Remove from git history** — Use `git filter-repo` or similar (dangerous!)
-3. **Update `.gitleaks.toml`** — Add pattern to prevent similar leaks
+3. **Document any accepted false positive** — Use a targeted `.gitleaksignore` entry or minimal `.gitleaks.toml` rule only after review
 4. **Report internally** — Document in SECURITY.md
 
 **Never** just delete the file and commit — the secret remains in git history!

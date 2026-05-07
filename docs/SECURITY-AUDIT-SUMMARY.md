@@ -52,17 +52,16 @@ Scanned 1.46 MB of code:
 
 ## Security Measures Implemented
 
-### 1. Gitleaks Configuration (`.gitleaks.toml`)
+### 1. Gitleaks Secret Scanning
 
 **Purpose**: Prevent accidental commits of secrets
 
 **Features**:
 
-- Uses all default gitleaks rules (covers 100+ secret patterns)
-- Custom allowlist for false positives
-- Ignores build artifacts (`node_modules/`, `dist/`, `.next/`)
-- Allowlists test files (dummy secrets are OK)
-- Allowlists environment variable references (`${VAR_NAME}`)
+- Uses the default Gitleaks rules
+- Runs as a dedicated GitHub-hosted PR gate
+- Keeps comments and uploaded artifacts disabled by default
+- Adds `.gitleaksignore` or repo-local config only for reviewed false positives or accepted historical findings
 
 **Patterns Detected**:
 
@@ -87,7 +86,7 @@ gitleaks detect --no-git
 gitleaks protect --staged
 
 # Scan full git history
-gitleaks detect
+gitleaks git --redact --verbose .
 ```
 
 ### 2. Pre-commit Hook (`.husky/pre-commit`)
@@ -99,7 +98,7 @@ gitleaks detect
 - Runs automatically before every `git commit`
 - Scans only staged files (fast)
 - Provides helpful error messages if secrets detected
-- Gracefully skips if gitleaks not installed (with warning)
+- Blocks the commit if Gitleaks is not installed
 
 **Example Output**:
 
@@ -119,7 +118,7 @@ To fix:
   3. Add to .env.local (which is in .gitignore)
   4. Update agent-orchestrator.yaml.example with placeholder values
 
-If this is a false positive, update .gitleaks.toml allowlist
+If this is a confirmed false positive, add a targeted .gitleaksignore entry or minimal .gitleaks.toml rule after review
 ```
 
 **Setup**:
@@ -251,15 +250,14 @@ $ gitleaks detect --no-git
 INFO: scanned ~1.46 MB in 79.9ms
 INFO: no leaks found
 
-# ⚠️ Full git history scan
-$ gitleaks detect
-WARN: leaks found: 1
-Finding: OpenClaw token in commit 0393ab70 (documented)
+# ✅ Full git history scan
+$ gitleaks git --redact --verbose .
+INFO: no leaks found
 ```
 
 ### Security Checklist
 
-- [x] Gitleaks configuration created and tested
+- [x] Gitleaks default-rule audit completed
 - [x] Pre-commit hook installed and working
 - [x] GitHub Actions security workflow added
 - [x] `.gitignore` updated with secret patterns

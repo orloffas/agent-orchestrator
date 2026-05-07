@@ -32,7 +32,7 @@ if [ $? -ne 0 ]; then
   echo "  3. Add to .env.local (which is in .gitignore)"
   echo "  4. Update agent-orchestrator.yaml.example with placeholder values"
   echo ""
-  echo "If this is a false positive, update .gitleaks.toml allowlist"
+  echo "If this is a confirmed false positive, add a targeted .gitleaksignore entry or minimal .gitleaks.toml rule after review"
   echo ""
   exit 1
 fi
