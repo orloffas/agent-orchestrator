@@ -354,7 +354,7 @@ if (isMainModule) {
   const { server, shutdown } = createDirectTerminalServer(TMUX);
   const PORT = parseInt(process.env.DIRECT_TERMINAL_PORT ?? "14801", 10);
 
-  server.listen(PORT, () => {
+  server.listen(PORT, "0.0.0.0", () => {
     console.log(`[DirectTerminal] WebSocket server listening on port ${PORT}`);
   });
 

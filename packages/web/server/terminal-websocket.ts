@@ -417,7 +417,7 @@ const server = createServer(async (req, res) => {
 
 const PORT = parseInt(process.env.TERMINAL_PORT ?? "14800", 10);
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`[Terminal] Server listening on port ${PORT}`);
 });
 
