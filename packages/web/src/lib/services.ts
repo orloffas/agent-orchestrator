@@ -96,6 +96,7 @@ async function initServices(): Promise<Services> {
 
   const services = { config, registry, sessionManager, lifecycleManager };
   globalForServices._aoServices = services;
+  startBacklogPoller();
   return services;
 }
 
@@ -110,7 +111,17 @@ const MAX_CONCURRENT_AGENTS = 5; // Max active agent sessions across all project
 const globalForBacklog = globalThis as typeof globalThis & {
   _aoBacklogStarted?: boolean;
   _aoBacklogTimer?: ReturnType<typeof setInterval>;
+  _aoBacklogPolling?: boolean;
 };
+
+// Track which issues we've already processed to avoid repeated API calls
+const processedIssues = new Set<string>();
+
+function unrefTimer(timer: ReturnType<typeof setInterval>): void {
+  if (typeof timer === "object" && timer !== null && "unref" in timer) {
+    (timer as { unref: () => void }).unref();
+  }
+}
 
 /** Start the backlog auto-claim loop. Idempotent — safe to call multiple times. */
 export function startBacklogPoller(): void {
@@ -119,11 +130,21 @@ export function startBacklogPoller(): void {
 
   // Run immediately, then on interval
   void pollBacklog();
-  globalForBacklog._aoBacklogTimer = setInterval(() => void pollBacklog(), BACKLOG_POLL_INTERVAL);
+  const timer = setInterval(() => void pollBacklog(), BACKLOG_POLL_INTERVAL);
+  unrefTimer(timer);
+  globalForBacklog._aoBacklogTimer = timer;
 }
 
-// Track which issues we've already processed to avoid repeated API calls
-const processedIssues = new Set<string>();
+/** Stop the backlog poller and reset in-memory state for isolated tests. */
+export function stopBacklogPollerForTests(): void {
+  if (globalForBacklog._aoBacklogTimer) {
+    clearInterval(globalForBacklog._aoBacklogTimer);
+  }
+  globalForBacklog._aoBacklogTimer = undefined;
+  globalForBacklog._aoBacklogStarted = false;
+  globalForBacklog._aoBacklogPolling = false;
+  processedIssues.clear();
+}
 
 /** Label GitHub issues for verification when their PRs have been merged. */
 async function labelIssuesForVerification(
@@ -210,6 +231,9 @@ async function relabelReopenedIssues(
 }
 
 export async function pollBacklog(): Promise<void> {
+  if (globalForBacklog._aoBacklogPolling) return;
+  globalForBacklog._aoBacklogPolling = true;
+
   try {
     const { config, registry, sessionManager } = await getServices();
 
@@ -337,6 +361,8 @@ export async function pollBacklog(): Promise<void> {
     }
   } catch (err) {
     console.error("[backlog] Poll failed:", err);
+  } finally {
+    globalForBacklog._aoBacklogPolling = false;
   }
 }
 
