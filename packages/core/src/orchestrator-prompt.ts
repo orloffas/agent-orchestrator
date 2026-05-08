@@ -156,7 +156,7 @@ Dispatch methods:
   - \`dispatched\`: whether a fix was dispatched
   - \`dispatch_method\`: claw | antig | config-edit
   - \`dispatched_to\`: target session or workspace
-- Create/update beads with \`br create\` or \`br update\`
+- Materialize durable findings through the project's configured tracker or materialization contract from Project-Specific Rules; do not hardcode a global Beads CLI command.
 - Append to \`roadmap/evolve-loop-findings.md\`
 
 ### Phase 7: RECAP (end of every cycle)
