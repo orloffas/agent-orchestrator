@@ -206,6 +206,19 @@ const SpawnQueueConfigSchema = z.object({
   maxActiveSessions: z.number().int().min(1).max(200).default(20),
 }).default({});
 
+const SupervisorConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    allowedProjects: z.array(z.string()).optional(),
+    staleWorkerMinutes: z.number().int().min(1).max(1440).default(30),
+    dashboardStaleGraceSeconds: z.number().int().min(1).max(3600).default(90),
+    bearerTokenEnv: z.string().default("SUPERNOVA_AO_SUPERVISOR_TOKEN"),
+    hermesGithubTokenEnv: z.string().default("SUPERNOVA_HERMES_GITHUB_TOKEN"),
+    hermesExpectedLogin: z.string().default("nova-hermes"),
+    aoExpectedLogin: z.string().default("nova-ome"),
+  })
+  .default({});
+
 // bd-jhv1: Manager evolve loop config schema
 const EvolveLoopConfigSchema = z.object({
   enabled: z.boolean().optional(),
@@ -338,6 +351,8 @@ const OrchestratorConfigSchema = z.object({
   autoMerge: AutoMergeOverrideSchema.optional(),
   // Global worktree base directory; can be overridden per-project.
   worktreeDir: z.string().optional(),
+  // Supervisor API/MCP surface for trusted internal clients such as Hermes.
+  supervisor: SupervisorConfigSchema.optional(),
 });
 
 // =============================================================================

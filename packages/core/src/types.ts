@@ -1296,6 +1296,28 @@ export interface OrchestratorConfig {
    * projects[].worktreeDir. The lifecycle-worker's orphan sweep uses this.
    */
   worktreeDir?: string;
+
+  /** Supervisor API/MCP surface for trusted internal clients such as Hermes. */
+  supervisor?: SupervisorConfig;
+}
+
+export interface SupervisorConfig {
+  /** Enables operator-facing supervisor routes and MCP tools. */
+  enabled: boolean;
+  /** Optional project allowlist. Omitted means all configured projects. */
+  allowedProjects?: string[];
+  /** Active worker inactivity threshold before reporting stale_worker. */
+  staleWorkerMinutes: number;
+  /** Dashboard/API freshness grace used by health reports. */
+  dashboardStaleGraceSeconds: number;
+  /** Env var holding the AO supervisor bearer token. */
+  bearerTokenEnv: string;
+  /** Env var holding the Hermes reviewer GitHub token. */
+  hermesGithubTokenEnv: string;
+  /** Expected GitHub login for Hermes reviewer actions. */
+  hermesExpectedLogin: string;
+  /** Expected GitHub login for AO worker GitHub actions. */
+  aoExpectedLogin: string;
 }
 
 /** Centralized auto-merge configuration (bd-n047) */
