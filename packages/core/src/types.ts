@@ -449,6 +449,7 @@ export interface AgentLaunchConfig {
   prompt?: string;
   permissions?: AgentPermissionInput;
   model?: string;
+  reasoningEffort?: AgentReasoningEffort;
   /**
    * System prompt to pass to the agent for orchestrator context.
    * - Claude Code: --append-system-prompt
@@ -1744,12 +1745,18 @@ export interface NotifierConfig {
 export interface CliModelDefaults {
   model?: string;
   orchestratorModel?: string;
+  reasoningEffort?: AgentReasoningEffort;
+  orchestratorReasoningEffort?: AgentReasoningEffort;
 }
+
+export type AgentReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface AgentSpecificConfig {
   permissions?: AgentPermissionMode | LegacyAgentPermissionMode;
   model?: string;
   orchestratorModel?: string;
+  reasoningEffort?: AgentReasoningEffort;
+  orchestratorReasoningEffort?: AgentReasoningEffort;
   [key: string]: unknown;
 }
 

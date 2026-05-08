@@ -121,11 +121,15 @@ const AgentPermissionSchema = z
   .default("permissionless")
   .transform((value) => (value === "skip" || value === "auto" ? "permissionless" : value));
 
+const AgentReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
+
 const AgentSpecificConfigSchema = z
   .object({
     permissions: AgentPermissionSchema,
     model: z.string().optional(),
     orchestratorModel: z.string().optional(),
+    reasoningEffort: AgentReasoningEffortSchema.optional(),
+    orchestratorReasoningEffort: AgentReasoningEffortSchema.optional(),
     opencodeSessionId: z.string().optional(),
   })
   .passthrough();
@@ -137,6 +141,8 @@ const RoleAgentSpecificConfigSchema = z
       .optional(),
     model: z.string().optional(),
     orchestratorModel: z.string().optional(),
+    reasoningEffort: AgentReasoningEffortSchema.optional(),
+    orchestratorReasoningEffort: AgentReasoningEffortSchema.optional(),
     opencodeSessionId: z.string().optional(),
   })
   .passthrough();
@@ -148,11 +154,13 @@ const RoleAgentDefaultsSchema = z
   })
   .optional();
 
-/** Only `model` / `orchestratorModel` are read for CLI-keyed defaults; extra keys are rejected. */
+/** Only model/reasoning defaults are read for CLI-keyed defaults; extra keys are rejected. */
 const CliModelDefaultsSchema = z
   .object({
     model: z.string().optional(),
     orchestratorModel: z.string().optional(),
+    reasoningEffort: AgentReasoningEffortSchema.optional(),
+    orchestratorReasoningEffort: AgentReasoningEffortSchema.optional(),
   })
   .strict();
 
