@@ -132,4 +132,21 @@ describe("generateOrchestratorPrompt — healthy-cycle fast path (bd-l5ko)", () 
     expect(prompt).toContain("/tmp/kb/my-app-handoff.md");
     expect(prompt).toContain("last 5 findings");
   });
+
+  it("uses project-specific materialization rules instead of hardcoded br commands", () => {
+    const cfg = makeEvolveLoopConfig({ autonomousFixScopes: ["bead-create"] });
+    cfg.projects["my-app"]!.orchestratorRules =
+      "Use supernova-beads-dispatch for project memory materialization.";
+
+    const prompt = generateOrchestratorPrompt({
+      config: cfg,
+      projectId: "my-app",
+      project: cfg.projects["my-app"]!,
+    });
+
+    expect(prompt).toContain("Use supernova-beads-dispatch for project memory materialization.");
+    expect(prompt).toContain("project's configured tracker or materialization contract");
+    expect(prompt).not.toContain("br create");
+    expect(prompt).not.toContain("br update");
+  });
 });
