@@ -68,10 +68,42 @@ vi.mock("@jleechanorg/ao-plugin-scm-github", () => ({ default: scmPlugin }));
 vi.mock("@jleechanorg/ao-plugin-tracker-github", () => ({ default: trackerGithubPlugin }));
 vi.mock("@jleechanorg/ao-plugin-tracker-linear", () => ({ default: trackerLinearPlugin }));
 
+type ServiceTestGlobals = typeof globalThis & {
+  _aoServices?: unknown;
+  _aoServicesInit?: unknown;
+  _aoBacklogStarted?: unknown;
+  _aoBacklogTimer?: ReturnType<typeof setInterval>;
+  _aoBacklogPolling?: unknown;
+};
+
+function clearServiceGlobals(): void {
+  const globals = globalThis as ServiceTestGlobals;
+  if (globals._aoBacklogTimer) {
+    clearInterval(globals._aoBacklogTimer);
+  }
+  delete globals._aoServices;
+  delete globals._aoServicesInit;
+  delete globals._aoBacklogStarted;
+  delete globals._aoBacklogTimer;
+  delete globals._aoBacklogPolling;
+}
+
+async function cleanupServicesModule(): Promise<void> {
+  try {
+    const { stopBacklogPollerForTests } = await import("../lib/services");
+    stopBacklogPollerForTests();
+  } catch {
+    // If the test body already failed during module import, direct global cleanup is enough.
+  } finally {
+    clearServiceGlobals();
+  }
+}
+
 describe("services", () => {
   beforeEach(() => {
     vi.resetModules();
     mockRegister.mockClear();
+    mockRegistry.get.mockReset();
     mockCreateSessionManager.mockReset();
     mockLoadConfig.mockReset();
     mockLoadConfig.mockReturnValue({
@@ -84,14 +116,14 @@ describe("services", () => {
       notificationRouting: { urgent: [], action: [], warning: [], info: [] },
       reactions: {},
     });
-    mockCreateSessionManager.mockReturnValue({});
-    delete (globalThis as typeof globalThis & { _aoServices?: unknown })._aoServices;
-    delete (globalThis as typeof globalThis & { _aoServicesInit?: unknown })._aoServicesInit;
+    mockCreateSessionManager.mockReturnValue({
+      list: vi.fn().mockResolvedValue([]),
+    });
+    clearServiceGlobals();
   });
 
-  afterEach(() => {
-    delete (globalThis as typeof globalThis & { _aoServices?: unknown })._aoServices;
-    delete (globalThis as typeof globalThis & { _aoServicesInit?: unknown })._aoServicesInit;
+  afterEach(async () => {
+    await cleanupServicesModule();
   });
 
   it("registers the OpenCode agent plugin with web services", async () => {
@@ -117,10 +149,41 @@ describe("pollBacklog", () => {
   const mockUpdateIssue = vi.fn();
   const mockListIssues = vi.fn();
   const mockSpawn = vi.fn();
+  const backlogIssue = {
+    id: "123",
+    title: "Test Issue",
+    description: "Test description",
+    url: "https://github.com/test/test/issues/123",
+    state: "open",
+    labels: ["agent:backlog"],
+  };
+
+  function configureBacklogRegistry(): void {
+    mockRegistry.get.mockImplementation((slot: string) => {
+      if (slot === "tracker") {
+        return {
+          name: "github",
+          listIssues: mockListIssues,
+          updateIssue: mockUpdateIssue,
+        };
+      }
+      if (slot === "agent") {
+        return { name: "claude-code" };
+      }
+      if (slot === "runtime") {
+        return { name: "tmux" };
+      }
+      if (slot === "workspace") {
+        return { name: "worktree" };
+      }
+      return null;
+    });
+  }
 
   beforeEach(async () => {
     vi.resetModules();
     mockRegister.mockClear();
+    mockRegistry.get.mockReset();
     mockCreateSessionManager.mockReset();
     mockLoadConfig.mockReset();
     mockUpdateIssue.mockClear();
@@ -149,46 +212,43 @@ describe("pollBacklog", () => {
       list: vi.fn().mockResolvedValue([]),
     });
 
-    delete (globalThis as typeof globalThis & { _aoServices?: unknown })._aoServices;
-    delete (globalThis as typeof globalThis & { _aoServicesInit?: unknown })._aoServicesInit;
+    clearServiceGlobals();
   });
 
-  afterEach(() => {
-    delete (globalThis as typeof globalThis & { _aoServices?: unknown })._aoServices;
-    delete (globalThis as typeof globalThis & { _aoServicesInit?: unknown })._aoServicesInit;
+  afterEach(async () => {
+    await cleanupServicesModule();
+  });
+
+  it("starts the backlog poller when services initialize", async () => {
+    mockListIssues.mockImplementation((query: { labels?: string[] }) =>
+      Promise.resolve(query.labels?.includes("agent:backlog") ? [backlogIssue] : []),
+    );
+    configureBacklogRegistry();
+
+    const { getServices } = await import("../lib/services");
+    await getServices();
+
+    await vi.waitUntil(
+      () =>
+        mockUpdateIssue.mock.calls.some(
+          ([issueId, update]) =>
+            issueId === "123" && update.removeLabels?.includes("agent:backlog"),
+        ),
+      { timeout: 1000 },
+    );
+
+    expect(mockSpawn).toHaveBeenCalledWith({ projectId: "test-project", issueId: "123" });
+    expect(mockListIssues).toHaveBeenCalledWith(
+      { state: "open", labels: ["agent:backlog"], limit: 10 },
+      expect.objectContaining({ tracker: { plugin: "github" } }),
+    );
   });
 
   it("removes agent:backlog label when claiming an issue", async () => {
-    mockListIssues.mockResolvedValue([
-      {
-        id: "123",
-        title: "Test Issue",
-        description: "Test description",
-        url: "https://github.com/test/test/issues/123",
-        state: "open",
-        labels: ["agent:backlog"],
-      },
-    ]);
-
-    mockRegistry.get.mockImplementation((slot: string) => {
-      if (slot === "tracker") {
-        return {
-          name: "github",
-          listIssues: mockListIssues,
-          updateIssue: mockUpdateIssue,
-        };
-      }
-      if (slot === "agent") {
-        return { name: "claude-code" };
-      }
-      if (slot === "runtime") {
-        return { name: "tmux" };
-      }
-      if (slot === "workspace") {
-        return { name: "worktree" };
-      }
-      return null;
-    });
+    mockListIssues.mockImplementation((query: { labels?: string[] }) =>
+      Promise.resolve(query.labels?.includes("agent:backlog") ? [backlogIssue] : []),
+    );
+    configureBacklogRegistry();
 
     const { pollBacklog } = await import("../lib/services");
     await pollBacklog();
