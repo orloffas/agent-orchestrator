@@ -17,7 +17,7 @@ const DEFAULT_SUPERVISOR_CONFIG: SupervisorConfig = {
   dashboardStaleGraceSeconds: 90,
   bearerTokenEnv: "SUPERNOVA_AO_SUPERVISOR_TOKEN",
   hermesGithubTokenEnv: "SUPERNOVA_HERMES_GITHUB_TOKEN",
-  hermesExpectedLogin: "nova-hermes",
+  hermesExpectedLogin: "nova-ome-hermes",
   aoExpectedLogin: "nova-ome",
 };
 

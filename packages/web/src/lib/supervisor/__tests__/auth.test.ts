@@ -8,7 +8,7 @@ const supervisorDefaults: SupervisorConfig = {
   dashboardStaleGraceSeconds: 90,
   bearerTokenEnv: "TEST_SUPERVISOR_TOKEN",
   hermesGithubTokenEnv: "TEST_HERMES_GITHUB_TOKEN",
-  hermesExpectedLogin: "nova-hermes",
+  hermesExpectedLogin: "nova-ome-hermes",
   aoExpectedLogin: "nova-ome",
 };
 
