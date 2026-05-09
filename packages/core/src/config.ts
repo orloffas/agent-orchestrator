@@ -222,7 +222,7 @@ const SupervisorConfigSchema = z
     dashboardStaleGraceSeconds: z.number().int().min(1).max(3600).default(90),
     bearerTokenEnv: z.string().default("SUPERNOVA_AO_SUPERVISOR_TOKEN"),
     hermesGithubTokenEnv: z.string().default("SUPERNOVA_HERMES_GITHUB_TOKEN"),
-    hermesExpectedLogin: z.string().default("nova-hermes"),
+    hermesExpectedLogin: z.string().default("nova-ome-hermes"),
     aoExpectedLogin: z.string().default("nova-ome"),
   })
   .default({});

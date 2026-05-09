@@ -11,7 +11,7 @@ describe("supervisor config", () => {
         dashboardStaleGraceSeconds: 120,
         bearerTokenEnv: "AO_SUPERVISOR_TOKEN",
         hermesGithubTokenEnv: "HERMES_GITHUB_TOKEN",
-        hermesExpectedLogin: "nova-hermes",
+        hermesExpectedLogin: "nova-ome-hermes",
         aoExpectedLogin: "nova-ome",
       },
       projects: {
@@ -30,7 +30,7 @@ describe("supervisor config", () => {
       dashboardStaleGraceSeconds: 120,
       bearerTokenEnv: "AO_SUPERVISOR_TOKEN",
       hermesGithubTokenEnv: "HERMES_GITHUB_TOKEN",
-      hermesExpectedLogin: "nova-hermes",
+      hermesExpectedLogin: "nova-ome-hermes",
       aoExpectedLogin: "nova-ome",
     });
   });
