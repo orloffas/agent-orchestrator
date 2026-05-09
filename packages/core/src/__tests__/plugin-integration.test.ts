@@ -281,12 +281,12 @@ describe("plugin integration", () => {
         issueId: "99",
       });
 
-      // tracker-github.branchName("99", project) → "feat/issue-99"
-      expect(session.branch).toBe("feat/issue-99");
+      // tracker-github.branchName("99", project) seeds a per-session branch slug.
+      expect(session.branch).toBe("codex/my-app/app-1-issue-99");
 
       // Workspace should have been called with the tracker-derived branch
       expect(mockWorkspace.create).toHaveBeenCalledWith(
-        expect.objectContaining({ branch: "feat/issue-99" }),
+        expect.objectContaining({ branch: "codex/my-app/app-1-issue-99" }),
       );
     });
 
@@ -306,8 +306,8 @@ describe("plugin integration", () => {
         issueId: "99",
       });
 
-      // Without tracker, falls back to "feat/<issueId>"
-      expect(session.branch).toBe("feat/99");
+      // Without tracker, falls back to a per-session branch from the issue id.
+      expect(session.branch).toBe("codex/my-app/app-1-99");
     });
 
     it("cleanup() never kills orchestrator sessions even when issue is closed", async () => {
@@ -659,9 +659,16 @@ describe("plugin integration", () => {
       seedSession({ status: "pr_open", pr });
 
       tmuxInject({
-        execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, out: string, err2: string) => void) => {
-          cb(null, "", "");
-        }),
+        execFile: vi.fn(
+          (
+            _cmd: string,
+            _args: string[],
+            _opts: unknown,
+            cb: (err: Error | null, out: string, err2: string) => void,
+          ) => {
+            cb(null, "", "");
+          },
+        ),
       });
 
       const mockSM: SessionManager = {
@@ -738,9 +745,16 @@ describe("plugin integration", () => {
       seedSession({ status: "pr_open", pr });
 
       tmuxInject({
-        execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, out: string, err2: string) => void) => {
-          cb(null, "", "");
-        }),
+        execFile: vi.fn(
+          (
+            _cmd: string,
+            _args: string[],
+            _opts: unknown,
+            cb: (err: Error | null, out: string, err2: string) => void,
+          ) => {
+            cb(null, "", "");
+          },
+        ),
       });
 
       // send() throws on every call — simulating an agent tmux session that is unreachable

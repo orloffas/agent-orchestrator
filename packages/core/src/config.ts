@@ -54,7 +54,16 @@ function inferScmPlugin(project: {
 const ReactionConfigSchema = z.object({
   auto: z.boolean().default(true),
   action: z
-    .enum(["send-to-agent", "notify", "auto-merge", "request-merge", "parallel-retry", "skeptic-review", "respawn-for-review", "claim-verification"])
+    .enum([
+      "send-to-agent",
+      "notify",
+      "auto-merge",
+      "request-merge",
+      "parallel-retry",
+      "skeptic-review",
+      "respawn-for-review",
+      "claim-verification",
+    ])
     .default("notify"),
   message: z.string().optional(),
   priority: z.enum(["urgent", "action", "warning", "info"]).optional(),
@@ -137,7 +146,11 @@ const AgentSpecificConfigSchema = z
 const RoleAgentSpecificConfigSchema = z
   .object({
     permissions: z
-      .union([z.enum(["permissionless", "default", "auto-edit", "suggest"]), z.literal("skip"), z.literal("auto")])
+      .union([
+        z.enum(["permissionless", "default", "auto-edit", "suggest"]),
+        z.literal("skip"),
+        z.literal("auto"),
+      ])
       .optional(),
     model: z.string().optional(),
     orchestratorModel: z.string().optional(),
@@ -202,17 +215,21 @@ const MergeGateConfigSchema = z
   .optional();
 
 // bd-bsu: Task queue config schema
-const TaskQueueConfigSchema = z.object({
-  enabled: z.boolean().default(false),
-  maxConcurrent: z.number().int().min(1).max(20).default(4),
-  beads: z.array(z.string()).default([]),
-  taskTemplate: z.string().optional(),
-}).optional();
+const TaskQueueConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    maxConcurrent: z.number().int().min(1).max(20).default(4),
+    beads: z.array(z.string()).default([]),
+    taskTemplate: z.string().optional(),
+  })
+  .optional();
 
-const SpawnQueueConfigSchema = z.object({
-  enabled: z.boolean().default(true),
-  maxActiveSessions: z.number().int().min(1).max(200).default(20),
-}).default({});
+const SpawnQueueConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxActiveSessions: z.number().int().min(1).max(200).default(20),
+  })
+  .default({});
 
 const SupervisorConfigSchema = z
   .object({
@@ -240,11 +257,25 @@ const EvolveLoopConfigSchema = z.object({
 // Technique config schema (autor research: all techniques converge, SR-prtype is safe default)
 const TechniqueConfigSchema = z.object({
   default: z.enum(["SR-prtype", "SR-fewshot", "SR", "ET", "PRM", "default"]).default("SR-prtype"),
-  perType: z.record(z.enum(["state-bool", "data-norm", "ci-workflow", "typeddict-schema", "large-arch-refactor", "unknown"]), z.enum(["SR-prtype", "SR-fewshot", "SR", "ET", "PRM", "default"])).optional(),
-  thresholds: z.object({
-    minScoreDiff: z.number().optional(),
-    confidenceN: z.number().optional(),
-  }).optional(),
+  perType: z
+    .record(
+      z.enum([
+        "state-bool",
+        "data-norm",
+        "ci-workflow",
+        "typeddict-schema",
+        "large-arch-refactor",
+        "unknown",
+      ]),
+      z.enum(["SR-prtype", "SR-fewshot", "SR", "ET", "PRM", "default"]),
+    )
+    .optional(),
+  thresholds: z
+    .object({
+      minScoreDiff: z.number().optional(),
+      confidenceN: z.number().optional(),
+    })
+    .optional(),
 });
 
 /** bd-n047: Defaults schema — enabled defaults to true so omitting it is an implicit enable. */
@@ -262,6 +293,13 @@ const AutoMergeOverrideSchema = z.union([
     mergeMethod: z.enum(["merge", "squash", "rebase"]).optional(),
   }),
 ]);
+
+const WorkspaceAllocatorConfigSchema = z.object({
+  projectsRoot: z.string().optional(),
+  worktreesRoot: z.string().optional(),
+  stateRoot: z.string().optional(),
+  artifactsRoot: z.string().optional(),
+});
 
 const ProjectConfigSchema = z.object({
   name: z.string().optional(),
@@ -303,6 +341,8 @@ const ProjectConfigSchema = z.object({
   mergeGate: MergeGateConfigSchema.optional(),
   // Override the global worktree base directory for this project.
   worktreeDir: z.string().optional(),
+  // Portable workspace allocator roots. Env overrides still take precedence at runtime.
+  workspaceAllocator: WorkspaceAllocatorConfigSchema.optional(),
   // bd-6jc: Kill session after this many consecutive SCM failures. Overrides global.
   scmFailureThreshold: z.number().int().min(1).max(100).optional(),
 
@@ -359,6 +399,8 @@ const OrchestratorConfigSchema = z.object({
   autoMerge: AutoMergeOverrideSchema.optional(),
   // Global worktree base directory; can be overridden per-project.
   worktreeDir: z.string().optional(),
+  // Portable workspace allocator roots. Env overrides still take precedence at runtime.
+  workspaceAllocator: WorkspaceAllocatorConfigSchema.optional(),
   // Supervisor API/MCP surface for trusted internal clients such as Hermes.
   supervisor: SupervisorConfigSchema.optional(),
 });

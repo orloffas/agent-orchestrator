@@ -24,7 +24,7 @@ let registryPromise: Promise<PluginRegistry> | null = null;
  * Caches the Promise (not the resolved value) so concurrent callers
  * await the same initialization rather than racing.
  */
-async function getRegistry(config: OrchestratorConfig): Promise<PluginRegistry> {
+export async function getPluginRegistry(config: OrchestratorConfig): Promise<PluginRegistry> {
   if (!registryPromise) {
     registryPromise = (async () => {
       const registry = createPluginRegistry();
@@ -45,7 +45,7 @@ async function getRegistry(config: OrchestratorConfig): Promise<PluginRegistry> 
 export async function getSessionManager(
   config: OrchestratorConfig,
 ): Promise<OpenCodeSessionManager> {
-  const registry = await getRegistry(config);
+  const registry = await getPluginRegistry(config);
   return createSessionManager({ config, registry });
 }
 
@@ -57,7 +57,7 @@ export async function getLifecycleManager(
   config: OrchestratorConfig,
   projectId?: string,
 ): Promise<LifecycleManager> {
-  const registry = await getRegistry(config);
+  const registry = await getPluginRegistry(config);
   const sessionManager = createSessionManager({ config, registry });
   return createLifecycleManager({ config, registry, sessionManager, projectId });
 }

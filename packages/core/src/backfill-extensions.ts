@@ -7,7 +7,14 @@
  * @module backfill-extensions
  */
 
-import { type PluginRegistry, type SessionManager, type Session, type SCM, type ProjectConfig, TERMINAL_STATUSES } from "./types.js";
+import {
+  type PluginRegistry,
+  type SessionManager,
+  type Session,
+  type SCM,
+  type ProjectConfig,
+  TERMINAL_STATUSES,
+} from "./types.js";
 import type { ProjectObserver } from "./observability.js";
 import { sortReviewsNewestFirst } from "./merge-gate-coderabbit.js";
 import { hasSession } from "./tmux.js";
@@ -193,7 +200,9 @@ export async function backfillUncoveredPRs(
         let crBody: string | undefined;
         try {
           decision = await scm.getReviewDecision(pr);
-        } catch { /* fail-open */ }
+        } catch {
+          /* fail-open */
+        }
 
         if (decision === "changes_requested") {
           // Rate-limit: skip CHANGES_REQUESTED PRs beyond the per-cycle cap.
@@ -209,7 +218,9 @@ export async function backfillUncoveredPRs(
               .filter((r) => r.author === "coderabbitai[bot]")
               .sort(sortReviewsNewestFirst);
             crBody = sorted.find((r) => r.state === "changes_requested")?.body;
-          } catch { /* fail-open */ }
+          } catch {
+            /* fail-open */
+          }
         }
 
         // Build spawn prompt: CR context when available, generic fallback otherwise.
@@ -319,17 +330,27 @@ Implement only the repository changes listed above, commit with [agento], and pu
                         encoding: "utf8",
                       })
                     ).stdout.trim();
-                  } catch { /* may be broken */ }
+                  } catch {
+                    /* may be broken */
+                  }
                   try {
                     const gitCommon = (
                       await execFileAsync(
                         "git",
-                        ["-C", worktreeDir, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                        [
+                          "-C",
+                          worktreeDir,
+                          "rev-parse",
+                          "--path-format=absolute",
+                          "--git-common-dir",
+                        ],
                         { timeout: GIT_TIMEOUT, encoding: "utf8" },
                       )
                     ).stdout.trim();
                     repoDir = resolve(gitCommon, "..");
-                  } catch { /* may be broken */ }
+                  } catch {
+                    /* may be broken */
+                  }
                 }
 
                 // If repo wasn't resolved from the worktree dir, use project.path directly
@@ -363,7 +384,9 @@ Implement only the repository changes listed above, commit with [agento], and pu
                         break;
                       }
                     }
-                  } catch { /* project.path is not a valid repo — try sibling scan below */ }
+                  } catch {
+                    /* project.path is not a valid repo — try sibling scan below */
+                  }
                 }
 
                 // Last resort: scan sibling worktree directories under projectWorktreeDir to
@@ -392,8 +415,10 @@ Implement only the repository changes listed above, commit with [agento], and pu
                               let gd = "";
                               let br = "";
                               for (const line of lines) {
-                                if (line.startsWith("worktree ")) wp = line.slice("worktree ".length);
-                                else if (line.startsWith("gitdir ")) gd = line.slice("gitdir ".length);
+                                if (line.startsWith("worktree "))
+                                  wp = line.slice("worktree ".length);
+                                else if (line.startsWith("gitdir "))
+                                  gd = line.slice("gitdir ".length);
                                 else if (line.startsWith("branch "))
                                   br = line.slice("branch ".length).replace(/^refs\/heads\//, "");
                               }
@@ -405,11 +430,15 @@ Implement only the repository changes listed above, commit with [agento], and pu
                               }
                             }
                             if (repoDir !== null) break;
-                          } catch { /* candidate not a git repo — try next */ }
+                          } catch {
+                            /* candidate not a git repo — try next */
+                          }
                         }
                       }
                     }
-                  } catch { /* best-effort */ }
+                  } catch {
+                    /* best-effort */
+                  }
                 }
 
                 // Absolute last resort: walk up from the worktree path or scan git worktree
@@ -433,29 +462,37 @@ Implement only the repository changes listed above, commit with [agento], and pu
                       timeout: GIT_TIMEOUT,
                       encoding: "utf8",
                     });
-                  } catch { /* best-effort */ }
+                  } catch {
+                    /* best-effort */
+                  }
                   try {
                     await execFileAsync(
                       "git",
                       ["-C", repoDir, "worktree", "remove", "--force", "--force", worktreeDir],
                       { timeout: GIT_TIMEOUT, encoding: "utf8" },
                     );
-                  } catch { /* best-effort */ }
+                  } catch {
+                    /* best-effort */
+                  }
                   try {
                     await execFileAsync("git", ["-C", repoDir, "worktree", "prune"], {
                       timeout: GIT_TIMEOUT,
                       encoding: "utf8",
                     });
-                  } catch { /* best-effort */ }
+                  } catch {
+                    /* best-effort */
+                  }
                   // Delete stale local branch to prevent cascading fetch failures.
                   // Only delete branches that look AO-managed (feat/*, session/*, fix/*).
-                  if (branch && /^(feat|fix|chore|docs|refactor|session)\//.test(branch)) {
+                  if (branch && /^(codex|feat|fix|chore|docs|refactor|session)\//.test(branch)) {
                     try {
                       await execFileAsync("git", ["-C", repoDir, "branch", "-D", branch], {
                         timeout: GIT_TIMEOUT,
                         encoding: "utf8",
                       });
-                    } catch { /* best-effort */ }
+                    } catch {
+                      /* best-effort */
+                    }
                   }
                 }
 
@@ -548,9 +585,12 @@ Implement only the repository changes listed above, commit with [agento], and pu
                 projectId,
                 sessionId: session.id,
                 data: {
-                  error: cleanupErr !== undefined
-                    ? (cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr))
-                    : "repoDir unknown — directory removed but git worktree entry could not be verified (operator should check manually)",
+                  error:
+                    cleanupErr !== undefined
+                      ? cleanupErr instanceof Error
+                        ? cleanupErr.message
+                        : String(cleanupErr)
+                      : "repoDir unknown — directory removed but git worktree entry could not be verified (operator should check manually)",
                 },
                 level: "warn",
               });

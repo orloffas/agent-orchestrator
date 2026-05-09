@@ -337,12 +337,12 @@ describe("spawn", () => {
     expect(mockRuntime.create).not.toHaveBeenCalled();
   });
 
-  it("uses issue ID to derive branch name", async () => {
+  it("uses issue ID to derive a unique per-session branch name", async () => {
     const sm = createSessionManager({ config, registry: mockRegistry });
 
     const session = await sm.spawn({ projectId: "my-app", issueId: "INT-100" });
 
-    expect(session.branch).toBe("feat/INT-100");
+    expect(session.branch).toBe("codex/my-app/app-1-int-100");
     expect(session.issueId).toBe("INT-100");
   });
 
@@ -351,7 +351,7 @@ describe("spawn", () => {
 
     const session = await sm.spawn({ projectId: "my-app", issueId: "fix login bug" });
 
-    expect(session.branch).toBe("feat/fix-login-bug");
+    expect(session.branch).toBe("codex/my-app/app-1-fix-login-bug");
   });
 
   it("preserves casing for branch-safe issue IDs without tracker", async () => {
@@ -359,7 +359,7 @@ describe("spawn", () => {
 
     const session = await sm.spawn({ projectId: "my-app", issueId: "INT-9999" });
 
-    expect(session.branch).toBe("feat/INT-9999");
+    expect(session.branch).toBe("codex/my-app/app-1-int-9999");
   });
 
   it("sanitizes issueId with special characters", async () => {
@@ -370,7 +370,7 @@ describe("spawn", () => {
       issueId: "Fix: user can't login (SSO)",
     });
 
-    expect(session.branch).toBe("feat/fix-user-can-t-login-sso");
+    expect(session.branch).toBe("codex/my-app/app-1-fix-user-can-t-login-sso");
   });
 
   it("truncates long slugs to 60 characters", async () => {
@@ -382,7 +382,8 @@ describe("spawn", () => {
         "this is a very long issue description that should be truncated to sixty characters maximum",
     });
 
-    expect(session.branch!.replace("feat/", "").length).toBeLessThanOrEqual(60);
+    expect(session.branch).toMatch(/^codex\/my-app\/app-1-/);
+    expect(session.branch!.replace("codex/my-app/app-1-", "").length).toBeLessThanOrEqual(60);
   });
 
   it("does not leave trailing dash after truncation", async () => {
@@ -394,7 +395,7 @@ describe("spawn", () => {
       issueId: "ab ".repeat(30), // "ab ab ab ..." → "ab-ab-ab-..." truncated at 60
     });
 
-    const slug = session.branch!.replace("feat/", "");
+    const slug = session.branch!.replace("codex/my-app/app-1-", "");
     expect(slug).not.toMatch(/-$/);
     expect(slug).not.toMatch(/^-/);
   });
@@ -405,7 +406,7 @@ describe("spawn", () => {
     const session = await sm.spawn({ projectId: "my-app", issueId: "!!!" });
 
     // Slug is empty after sanitization, falls back to sessionId
-    expect(session.branch).toMatch(/^feat\/app-\d+$/);
+    expect(session.branch).toMatch(/^codex\/my-app\/app-\d+-app-\d+$/);
   });
 
   it("sanitizes issueId containing '..' (invalid in git branch names)", async () => {
@@ -414,7 +415,7 @@ describe("spawn", () => {
     const session = await sm.spawn({ projectId: "my-app", issueId: "foo..bar" });
 
     // '..' is invalid in git refs, so it should be slugified
-    expect(session.branch).toBe("feat/foo-bar");
+    expect(session.branch).toBe("codex/my-app/app-1-foo-bar");
   });
 
   it("uses tracker.branchName when tracker is available", async () => {
@@ -444,7 +445,7 @@ describe("spawn", () => {
     });
 
     const session = await sm.spawn({ projectId: "my-app", issueId: "INT-100" });
-    expect(session.branch).toBe("custom/INT-100-my-feature");
+    expect(session.branch).toBe("codex/my-app/app-1-int-100-my-feature");
   });
 
   it("increments session numbers correctly", async () => {
@@ -463,13 +464,13 @@ describe("spawn", () => {
 
     const first = await sm.spawn({ projectId: "my-app" });
     expect(first.id).toBe("app-1");
-    expect(first.branch).toBe("session/app-1");
+    expect(first.branch).toBe("codex/my-app/app-1-session");
 
     await sm.kill(first.id);
 
     const second = await sm.spawn({ projectId: "my-app" });
     expect(second.id).toBe("app-2");
-    expect(second.branch).toBe("session/app-2");
+    expect(second.branch).toBe("codex/my-app/app-2-session");
   });
 
   it("skips remote session branches when allocating a fresh session id", async () => {
@@ -481,7 +482,7 @@ describe("spawn", () => {
     const session = await sm.spawn({ projectId: "my-app" });
 
     expect(session.id).toBe("app-23");
-    expect(session.branch).toBe("session/app-23");
+    expect(session.branch).toBe("codex/my-app/app-23-session");
   });
 
   it("writes metadata file", async () => {
@@ -1012,7 +1013,7 @@ describe("spawn", () => {
     const session = await sm.spawn({ projectId: "my-app", issueId: "INT-9999" });
 
     expect(session.issueId).toBeNull();
-    expect(session.branch).toBe("feat/INT-9999");
+    expect(session.branch).toBe("codex/my-app/app-1-int-9999");
     expect(session.metadata["userPrompt"]).toBe("INT-9999");
     expect(session.metadata["requestedTask"]).toBe("INT-9999");
     // tracker.branchName and generatePrompt should NOT be called when issue wasn't resolved
@@ -1052,7 +1053,7 @@ describe("spawn", () => {
     const session = await sm.spawn({ projectId: "my-app", issueId: "fix login bug" });
 
     expect(session.issueId).toBeNull();
-    expect(session.branch).toBe("feat/fix-login-bug");
+    expect(session.branch).toBe("codex/my-app/app-1-fix-login-bug");
     expect(session.metadata["userPrompt"]).toBe("fix login bug");
     expect(session.metadata["requestedTask"]).toBe("fix login bug");
     expect(mockTracker.branchName).not.toHaveBeenCalled();
@@ -1262,8 +1263,8 @@ describe("spawn", () => {
     const session = await sm.spawn({ projectId: "my-app" });
 
     expect(session.issueId).toBeNull();
-    // Uses session/{sessionId} to avoid conflicts with default branch
-    expect(session.branch).toMatch(/^session\/app-\d+$/);
+    // Uses a per-session branch to avoid conflicts with default or sibling branches.
+    expect(session.branch).toMatch(/^codex\/my-app\/app-\d+-session$/);
     expect(session.branch).not.toBe("main");
   });
 

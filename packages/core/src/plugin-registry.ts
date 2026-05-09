@@ -101,6 +101,28 @@ function extractPluginConfig(
     }
   }
 
+  // Workspace plugins receive portable allocator roots plus legacy worktreeDir.
+  // Explicit plugin config wins over the derived compatibility fields.
+  if (slot === "workspace") {
+    const pluginConfig = config.plugins?.[`workspace-${name}`];
+    const derived: Record<string, unknown> = {};
+    if (config.workspaceAllocator) {
+      Object.assign(derived, config.workspaceAllocator);
+    }
+    if (name === "worktree") {
+      const worktreesRoot = config.workspaceAllocator?.worktreesRoot ?? config.worktreeDir;
+      if (worktreesRoot) derived.worktreeDir = worktreesRoot;
+    }
+    if (name === "clone") {
+      const cloneDir = config.workspaceAllocator?.worktreesRoot ?? config.worktreeDir;
+      if (cloneDir) derived.cloneDir = cloneDir;
+    }
+    if (pluginConfig && typeof pluginConfig === "object") {
+      return { ...derived, ...(pluginConfig as Record<string, unknown>) };
+    }
+    return Object.keys(derived).length > 0 ? derived : undefined;
+  }
+
   return undefined;
 }
 

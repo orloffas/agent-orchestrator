@@ -85,10 +85,7 @@ import { sessionFromMetadata } from "./utils/session-from-metadata.js";
 import { parsePrFromUrl } from "./utils/pr.js";
 import { safeJsonParse } from "./utils/validation.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
-import {
-  getAllSessionPrefixes,
-  getAoManagedSessionWorktreePattern,
-} from "./session-prefixes.js";
+import { getAllSessionPrefixes, getAoManagedSessionWorktreePattern } from "./session-prefixes.js";
 import { applySlashCommandRouting } from "./fork-slash-command-routing.js";
 import {
   WORKER_BOOT_PROMPT,
@@ -98,6 +95,12 @@ import {
   type WorkerPromptArtifact,
 } from "./prompt-artifact-builder.js";
 import { AOWorkerLogger } from "./ao-worker-logger.js";
+import {
+  branchSlug,
+  makeSessionBranch,
+  releaseWorkspaceLease,
+  resolveAgentWorkspaceRoots,
+} from "./agent-workspace-allocator.js";
 
 const _execFileAsync = promisify(execFile);
 const OPENCODE_DISCOVERY_TIMEOUT_MS = 2_000;
@@ -408,6 +411,13 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
   function getManagedWorkspaceRoots(project: ProjectConfig, projectId?: string): string[] {
     const roots = [getWorktreesDir(config.configPath, project.path)];
+    const allocatorRoots = resolveAgentWorkspaceRoots({
+      configPath: config.configPath,
+      projectId: projectId ?? basename(project.path),
+      project,
+      config: config.workspaceAllocator,
+    });
+    roots.push(allocatorRoots.worktreesRoot);
     const legacyIds = new Set<string>();
     if (projectId) {
       legacyIds.add(projectId);
@@ -431,6 +441,25 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
     const roots = getManagedWorkspaceRoots(project, projectId);
     return roots.some((root) => isPathInside(workspacePath, root));
+  }
+
+  function releaseAllocatorLease(
+    project: ProjectConfig | undefined,
+    projectId: string | undefined,
+    sessionId: SessionId | undefined,
+  ): void {
+    if (!project || !projectId || !sessionId) return;
+    try {
+      const roots = resolveAgentWorkspaceRoots({
+        configPath: config.configPath,
+        projectId,
+        project: { ...project, configPath: config.configPath },
+        config: config.workspaceAllocator,
+      });
+      releaseWorkspaceLease(roots.stateRoot, sessionId);
+    } catch {
+      // Best-effort cleanup; lease status/doctor can report leftovers explicitly.
+    }
   }
 
   function listArchivedSessionIds(sessionsDir: string): string[] {
@@ -634,7 +663,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     // merged orchestrator session to "working" — we must still exclude it.
     // The original status is the authoritative source for terminal-state filtering.
     // Build a lookup map once (O(n)) instead of scanning inside filter (O(n²)).
-    const originalStatusByName = new Map(records.map((r) => [r.sessionName, r.raw["status"] ?? ""]));
+    const originalStatusByName = new Map(
+      records.map((r) => [r.sessionName, r.raw["status"] ?? ""]),
+    );
     return repaired.filter((record) => {
       const originalStatus = originalStatusByName.get(record.sessionName) ?? "";
       return originalStatus !== "killed" && originalStatus !== "merged";
@@ -1075,72 +1106,93 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       {
         prompt: spawnConfig.prompt,
         issueId: spawnConfig.issueId,
-      }
+      },
     );
 
-    // Determine branch name — explicit branch always takes priority
+    // Determine branch name — explicit branch always takes priority.
+    // Auto-generated writer branches are per-session so concurrent workers
+    // never share one task branch even when they work on the same issue.
     let branch: string;
     if (spawnConfig.branch) {
       branch = spawnConfig.branch;
-    } else if (spawnConfig.issueId && plugins.tracker && resolvedIssue) {
-      branch = plugins.tracker.branchName(spawnConfig.issueId, project);
-    } else if (spawnConfig.issueId) {
-      // If the issueId is already branch-safe (e.g. "INT-9999"), use as-is.
-      // Otherwise sanitize free-text (e.g. "fix login bug") into a valid slug.
-      const id = spawnConfig.issueId;
-      const isBranchSafe = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) && !id.includes("..");
-      const slug = isBranchSafe
-        ? id
-        : id
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, "-")
-            .slice(0, 60)
-            .replace(/^-+|-+$/g, "");
-      branch = `feat/${slug || sessionId}`;
     } else {
-      branch = `session/${sessionId}`;
+      let taskSlug: string;
+      if (spawnConfig.issueId && plugins.tracker && resolvedIssue) {
+        taskSlug = branchSlug(plugins.tracker.branchName(spawnConfig.issueId, project));
+      } else if (spawnConfig.issueId) {
+        // If the issueId is already branch-safe (e.g. "INT-9999"), use as-is.
+        // Otherwise sanitize free-text (e.g. "fix login bug") into a valid slug.
+        const id = spawnConfig.issueId;
+        const isBranchSafe = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) && !id.includes("..");
+        taskSlug = isBranchSafe
+          ? id
+          : id
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .slice(0, 60)
+              .replace(/^-+|-+$/g, "");
+      } else {
+        taskSlug = "session";
+      }
+      branch = makeSessionBranch(spawnConfig.projectId, sessionId, taskSlug || sessionId);
     }
 
-    // Create workspace (if workspace plugin is available)
+    if (!plugins.workspace) {
+      throw new Error(
+        "Writer sessions require a workspace plugin; refusing to start in the seed checkout",
+      );
+    }
+
+    const projectForWorkspace: ProjectConfig = { ...project, configPath: config.configPath };
+
+    // Create workspace
     let workspacePath = project.path;
     let workspaceRepoPath = project.path; // default to project path; workspace plugin overrides if it returns repoPath
-    if (plugins.workspace) {
-      try {
-        const wsInfo = await plugins.workspace.create({
-          projectId: spawnConfig.projectId,
-          project,
-          sessionId,
-          branch,
-        });
-        workspacePath = wsInfo.path;
-        if (wsInfo.repoPath) workspaceRepoPath = wsInfo.repoPath;
-        // Persist the owning repo path so destroy() can use it directly without
-        // re-discovering via git worktree list (avoids the .git vs repo-root ambiguity).
-
-        // Run post-create hooks — clean up workspace on failure
-        if (plugins.workspace.postCreate) {
-          try {
-            await plugins.workspace.postCreate(wsInfo, project);
-          } catch (err) {
-            if (shouldDestroyWorkspacePath(project, spawnConfig.projectId, workspacePath)) {
-              try {
-                await plugins.workspace.destroy(workspacePath, workspaceRepoPath);
-              } catch {
-                /* best effort */
-              }
-            }
-            throw err;
-          }
-        }
-      } catch (err) {
-        // Clean up reserved session ID on workspace failure
-        try {
-          deleteMetadata(sessionsDir, sessionId, false);
-        } catch {
-          /* best effort */
-        }
-        throw err;
+    let workspaceLeaseId: string | undefined;
+    let workspaceReadOnlyGitFallback = false;
+    try {
+      const wsInfo = await plugins.workspace.create({
+        projectId: spawnConfig.projectId,
+        project: projectForWorkspace,
+        sessionId,
+        branch,
+      });
+      workspacePath = wsInfo.path;
+      if (wsInfo.repoPath) workspaceRepoPath = wsInfo.repoPath;
+      workspaceLeaseId = wsInfo.leaseId;
+      workspaceReadOnlyGitFallback = wsInfo.readOnlyGitFallback === true;
+      if (normalizePath(workspacePath) === normalizePath(project.path)) {
+        throw new Error(
+          `Workspace plugin returned the seed checkout for writer session "${sessionId}"; refusing to launch`,
+        );
       }
+      // Persist the owning repo path so destroy() can use it directly without
+      // re-discovering via git worktree list (avoids the .git vs repo-root ambiguity).
+
+      // Run post-create hooks — clean up workspace on failure
+      if (plugins.workspace.postCreate) {
+        try {
+          await plugins.workspace.postCreate(wsInfo, projectForWorkspace);
+        } catch (err) {
+          if (shouldDestroyWorkspacePath(project, spawnConfig.projectId, workspacePath)) {
+            try {
+              await plugins.workspace.destroy(workspacePath, workspaceRepoPath);
+              releaseAllocatorLease(projectForWorkspace, spawnConfig.projectId, workspaceLeaseId);
+            } catch {
+              /* best effort */
+            }
+          }
+          throw err;
+        }
+      }
+    } catch (err) {
+      // Clean up reserved session ID on workspace failure
+      try {
+        deleteMetadata(sessionsDir, sessionId, false);
+      } catch {
+        /* best effort */
+      }
+      throw err;
     }
 
     const cleanupFailedSpawn = async (): Promise<void> => {
@@ -1150,6 +1202,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       ) {
         try {
           await plugins.workspace.destroy(workspacePath, workspaceRepoPath);
+          releaseAllocatorLease(projectForWorkspace, spawnConfig.projectId, workspaceLeaseId);
         } catch {
           /* best effort */
         }
@@ -1173,9 +1226,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
     // Generate prompt with validated issue
     let issueContext: string | undefined;
-    const isResolvedTrackerIssue = Boolean(
-      spawnConfig.issueId && plugins.tracker && resolvedIssue,
-    );
+    const isResolvedTrackerIssue = Boolean(spawnConfig.issueId && plugins.tracker && resolvedIssue);
     if (isResolvedTrackerIssue && spawnConfig.issueId && plugins.tracker) {
       try {
         issueContext = await plugins.tracker.generatePrompt(spawnConfig.issueId, project);
@@ -1286,7 +1337,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           AO_CALLER_TYPE: "agent",
           AO_PROJECT_ID: spawnConfig.projectId,
           AO_CONFIG_PATH: config.configPath,
-          ...(config.port !== undefined && config.port !== null && { AO_PORT: String(config.port) }),
+          ...(config.port !== undefined &&
+            config.port !== null && { AO_PORT: String(config.port) }),
         },
         onIdle: (idleSessionId: string) => {
           // Persist idle state so lifecycle-manager picks it up on its next poll.
@@ -1337,6 +1389,8 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         userPrompt: requestedTask,
         requestedTask,
         composedPromptPath,
+        workspaceLeaseId,
+        readOnlyGitFallback: workspaceReadOnlyGitFallback ? "true" : undefined,
       });
 
       if (plugins.agent.postLaunchSetup) {
@@ -1848,101 +1902,102 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     // ─── Pass 1: ~/.worktrees/{projectId}/{sessionId}/ ───────────────────────
     // Skip entirely when ~/.worktrees/ does not exist (fresh installs, custom-only setups).
     if (existsSync(worktreeBaseDir)) {
-    for (const projectEntry of readdirSync(worktreeBaseDir, { withFileTypes: true })) {
-      if (!projectEntry.isDirectory()) continue;
-      const projectWorktreeDir = join(worktreeBaseDir, projectEntry.name);
-      if (!existsSync(projectWorktreeDir)) continue;
+      for (const projectEntry of readdirSync(worktreeBaseDir, { withFileTypes: true })) {
+        if (!projectEntry.isDirectory()) continue;
+        const projectWorktreeDir = join(worktreeBaseDir, projectEntry.name);
+        if (!existsSync(projectWorktreeDir)) continue;
 
-      // Look up project config; use top-level configPath for hash generation
-      const projectId = projectEntry.name;
-      if (!config.projects[projectId]) continue;
+        // Look up project config; use top-level configPath for hash generation
+        const projectId = projectEntry.name;
+        if (!config.projects[projectId]) continue;
 
-      const configPath = config.configPath;
-      if (!configPath) continue;
+        const configPath = config.configPath;
+        if (!configPath) continue;
 
-      for (const entry of readdirSync(projectWorktreeDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
+        for (const entry of readdirSync(projectWorktreeDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
 
-        const worktreeName = entry.name;
+          const worktreeName = entry.name;
 
-        // Only process AO-managed session worktrees matching the naming pattern
-        if (!aoSessionWorktreePattern.test(worktreeName)) continue;
+          // Only process AO-managed session worktrees matching the naming pattern
+          if (!aoSessionWorktreePattern.test(worktreeName)) continue;
 
-        // Derive prefix and number from worktree name (e.g. "ao-748" → prefix="ao", num=748)
-        const nameMatch = worktreeName.match(/^([a-zA-Z0-9_-]+)-(\d+)$/);
-        if (!nameMatch) continue;
-        const prefix = nameMatch[1]!;
-        const num = Number.parseInt(nameMatch[2]!, 10);
+          // Derive prefix and number from worktree name (e.g. "ao-748" → prefix="ao", num=748)
+          const nameMatch = worktreeName.match(/^([a-zA-Z0-9_-]+)-(\d+)$/);
+          if (!nameMatch) continue;
+          const prefix = nameMatch[1]!;
+          const num = Number.parseInt(nameMatch[2]!, 10);
 
-        // Construct the full tmux session name using the same logic as session creation:
-        // tmux sessions are named "{hash}-{prefix}-{num}" (e.g. "bb5e6b7f8db3-ao-748")
-        const tmuxName = generateTmuxName(configPath, prefix, num);
+          // Construct the full tmux session name using the same logic as session creation:
+          // tmux sessions are named "{hash}-{prefix}-{num}" (e.g. "bb5e6b7f8db3-ao-748")
+          const tmuxName = generateTmuxName(configPath, prefix, num);
 
-        const worktreePath = join(projectWorktreeDir, worktreeName);
+          const worktreePath = join(projectWorktreeDir, worktreeName);
 
-        // Check if the tmux session is still alive
-        let sessionAlive: boolean;
-        try {
-          await execFileAsync("tmux", ["has-session", "-t", tmuxName], { timeout: 3_000 });
-          sessionAlive = true;
-        } catch {
-          sessionAlive = false;
-        }
-
-        if (sessionAlive) continue;
-
-        // Tmux session is dead — use the correct project's repo path directly.
-        // Do NOT infer by probing all projects: in multi-project configs, probing
-        // could return the wrong repo and delete a branch that shares a name with
-        // the stale AO worktree's branch.
-        const project = config.projects[projectId];
-        if (!project) continue;
-        const repoPath = project.path;
-
-        // Capture branch before removal so we can clean it up afterwards.
-        // This prevents a stale local branch from blocking future `git fetch` into
-        // the same branch name in other worktrees (cascading poison scenario).
-        let branch: string | null = null;
-        try {
-          branch = (
-            await execFileAsync("git", ["-C", worktreePath, "branch", "--show-current"], {
-              timeout: 5_000,
-            })
-          ).stdout.trim();
-        } catch {
-          // Directory may already be gone or not a valid git dir — that's OK
-        }
-
-        // Remove the worktree
-        try {
-          await execFileAsync(
-            "git",
-            ["worktree", "remove", "--force", "--force", worktreePath],
-            { cwd: repoPath, timeout: 30_000 },
-          );
-        } catch {
-          // Best-effort: fall back to rmSync if git worktree remove fails
+          // Check if the tmux session is still alive
+          let sessionAlive: boolean;
           try {
-            rmSync(worktreePath, { recursive: true, force: true });
+            await execFileAsync("tmux", ["has-session", "-t", tmuxName], { timeout: 3_000 });
+            sessionAlive = true;
           } catch {
-            // Already gone
+            sessionAlive = false;
           }
-        }
 
-        // Delete the local branch to prevent cascading fetch failures.
-        // Only delete branches that look AO-managed — this guards against accidentally
-        // deleting pre-existing user branches (main, master, develop, etc.).
-        if (branch && /^(feat|fix|chore|docs|refactor|session)\//.test(branch)) {
+          if (sessionAlive) continue;
+
+          // Tmux session is dead — use the correct project's repo path directly.
+          // Do NOT infer by probing all projects: in multi-project configs, probing
+          // could return the wrong repo and delete a branch that shares a name with
+          // the stale AO worktree's branch.
+          const project = config.projects[projectId];
+          if (!project) continue;
+          const repoPath = project.path;
+
+          // Capture branch before removal so we can clean it up afterwards.
+          // This prevents a stale local branch from blocking future `git fetch` into
+          // the same branch name in other worktrees (cascading poison scenario).
+          let branch: string | null = null;
           try {
-            await execFileAsync("git", ["-C", repoPath, "branch", "-D", branch], {
-              timeout: 10_000,
-            });
+            branch = (
+              await execFileAsync("git", ["-C", worktreePath, "branch", "--show-current"], {
+                timeout: 5_000,
+              })
+            ).stdout.trim();
           } catch {
-            // Branch may already be gone or checked out elsewhere — that's OK
+            // Directory may already be gone or not a valid git dir — that's OK
+          }
+
+          // Remove the worktree
+          try {
+            await execFileAsync("git", ["worktree", "remove", "--force", "--force", worktreePath], {
+              cwd: repoPath,
+              timeout: 30_000,
+            });
+            releaseAllocatorLease(project, projectId, worktreeName);
+          } catch {
+            // Best-effort: fall back to rmSync if git worktree remove fails
+            try {
+              rmSync(worktreePath, { recursive: true, force: true });
+              releaseAllocatorLease(project, projectId, worktreeName);
+            } catch {
+              // Already gone
+            }
+          }
+
+          // Delete the local branch to prevent cascading fetch failures.
+          // Only delete branches that look AO-managed — this guards against accidentally
+          // deleting pre-existing user branches (main, master, develop, etc.).
+          if (branch && /^(codex|feat|fix|chore|docs|refactor|session)\//.test(branch)) {
+            try {
+              await execFileAsync("git", ["-C", repoPath, "branch", "-D", branch], {
+                timeout: 10_000,
+              });
+            } catch {
+              // Branch may already be gone or checked out elsewhere — that's OK
+            }
           }
         }
       }
-    }
     } // end Pass 1
 
     // ─── Pass 2: Zombie worktrees outside ~/.worktrees/ ────────────────────────
@@ -1950,16 +2005,14 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     // project, then remove zombies whose AO sessions are in a terminal state.
     // This catches worktrees created at custom paths (e.g. /tmp/pr-360-worktree).
 
-    for (const [, project] of Object.entries(config.projects)) {
+    for (const [projectId, project] of Object.entries(config.projects)) {
       const repoPath = project.path;
 
       // Verify this path is inside a git work tree
       try {
-        await execFileAsync(
-          "git",
-          ["-C", repoPath, "rev-parse", "--is-inside-work-tree"],
-          { timeout: 5_000 },
-        );
+        await execFileAsync("git", ["-C", repoPath, "rev-parse", "--is-inside-work-tree"], {
+          timeout: 5_000,
+        });
       } catch {
         continue;
       }
@@ -1997,6 +2050,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         const sessionsDir = getProjectSessionsDir(project);
         const sessionIds = sessionListMetadata(sessionsDir);
         let matchingRaw: Record<string, string> | null = null;
+        let matchingSessionId: string | null = null;
 
         for (const sessionId of sessionIds) {
           const raw = readMeta(sessionsDir, sessionId);
@@ -2004,6 +2058,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
           const storedWorktree = raw["worktree"];
           if (storedWorktree && normalizePath(storedWorktree) === normalizedWorktree) {
             matchingRaw = raw;
+            matchingSessionId = sessionId;
             break;
           }
         }
@@ -2014,11 +2069,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         if (!status) continue;
 
         // Only remove if session is in a terminal state
-        if (
-          !TERMINAL_STATUSES.has(
-            status as Parameters<typeof TERMINAL_STATUSES.has>[0],
-          )
-        ) {
+        if (!TERMINAL_STATUSES.has(status as Parameters<typeof TERMINAL_STATUSES.has>[0])) {
           continue;
         }
 
@@ -2027,15 +2078,16 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         const branch = matchingRaw["branch"] ?? null;
 
         try {
-          await execFileAsync(
-            "git",
-            ["worktree", "remove", "--force", "--force", worktreePath],
-            { cwd: repoPath, timeout: 30_000 },
-          );
+          await execFileAsync("git", ["worktree", "remove", "--force", "--force", worktreePath], {
+            cwd: repoPath,
+            timeout: 30_000,
+          });
+          releaseAllocatorLease(project, projectId, matchingSessionId ?? undefined);
         } catch {
           // Best-effort fallback: rmSync
           try {
             rmSync(worktreePath, { recursive: true, force: true });
+            releaseAllocatorLease(project, projectId, matchingSessionId ?? undefined);
           } catch {
             // Already gone
           }
@@ -2044,7 +2096,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         // Delete the local branch to prevent cascading fetch failures.
         // Only delete branches that look AO-managed — guards against accidentally
         // deleting pre-existing user branches (main, master, develop, etc.).
-        if (branch && /^(feat|fix|chore|docs|refactor|session)\//.test(branch)) {
+        if (branch && /^(codex|feat|fix|chore|docs|refactor|session)\//.test(branch)) {
           try {
             await execFileAsync("git", ["-C", repoPath, "branch", "-D", branch], {
               timeout: 10_000,
@@ -2099,6 +2151,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         try {
           const repoPath = raw["repoPath"];
           await workspacePlugin.destroy(worktree, repoPath || undefined);
+          releaseAllocatorLease(project, projectId, raw["workspaceLeaseId"] || sessionId);
         } catch {
           // Workspace might already be gone
         }
@@ -2211,7 +2264,10 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         // Check if runtime is dead — resolve runtime by handle's runtimeName, not project default
         if (!shouldKill && session.runtimeHandle) {
           try {
-            const aliveRuntime = registry.get<Runtime>("runtime", session.runtimeHandle.runtimeName);
+            const aliveRuntime = registry.get<Runtime>(
+              "runtime",
+              session.runtimeHandle.runtimeName,
+            );
             if (aliveRuntime) {
               const alive = await aliveRuntime.isAlive(session.runtimeHandle);
               if (!alive) shouldKill = true;
@@ -2910,12 +2966,18 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         const wsInfo = await plugins.workspace.restore(
           {
             projectId,
-            project,
+            project: { ...project, configPath: config.configPath },
             sessionId,
             branch: session.branch,
           },
           workspacePath,
         );
+
+        updateMetadata(sessionsDir, sessionId, {
+          ...(wsInfo.repoPath ? { repoPath: wsInfo.repoPath } : {}),
+          ...(wsInfo.leaseId ? { workspaceLeaseId: wsInfo.leaseId } : {}),
+          readOnlyGitFallback: wsInfo.readOnlyGitFallback ? "true" : undefined,
+        });
 
         // Run post-create hooks on restored workspace
         if (plugins.workspace.postCreate) {
@@ -2944,7 +3006,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const restoredRequestedTask = session.metadata?.requestedTask ?? session.metadata?.userPrompt;
     let restoredPrompt = restoredRequestedTask;
     let restoredSystemPromptFile: string | undefined;
-    const restoredPromptArtifactMissing = Boolean(restoredPromptFile && !existsSync(restoredPromptFile));
+    const restoredPromptArtifactMissing = Boolean(
+      restoredPromptFile && !existsSync(restoredPromptFile),
+    );
     if (restoredPromptFile && existsSync(restoredPromptFile)) {
       restoredSystemPromptFile = restoredPromptFile;
       if (agentSupportsPromptFile(plugins.agent)) {
@@ -3005,7 +3069,9 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       try {
         await plugins.agent.setupWorkspaceHooks(workspacePath, { dataDir: sessionsDir });
       } catch (err) {
-        console.warn(`[session-manager] hook setup failed for workspace=${workspacePath} agent=${selection.agentName}: ${err}`);
+        console.warn(
+          `[session-manager] hook setup failed for workspace=${workspacePath} agent=${selection.agentName}: ${err}`,
+        );
       }
     }
 
@@ -3098,5 +3164,17 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     return restoredSession;
   }
 
-  return { spawn, spawnOrchestrator, restore, list, get, kill, cleanup, send, claimPR, remap, pruneStaleWorktrees };
+  return {
+    spawn,
+    spawnOrchestrator,
+    restore,
+    list,
+    get,
+    kill,
+    cleanup,
+    send,
+    claimPR,
+    remap,
+    pruneStaleWorktrees,
+  };
 }
