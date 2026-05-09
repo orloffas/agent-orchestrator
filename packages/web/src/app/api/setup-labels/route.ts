@@ -12,6 +12,27 @@ const LABELS = [
   { name: "agent:in-progress", color: "7C3AED", description: "Agent is working on this" },
   { name: "agent:blocked", color: "DC2626", description: "Agent is blocked" },
   { name: "agent:done", color: "16A34A", description: "Agent completed this" },
+  {
+    name: "agent:decompose-pending",
+    color: "F59E0B",
+    description: "Agent decomposition awaits approval",
+  },
+  {
+    name: "agent:decompose-approved",
+    color: "2563EB",
+    description: "Agent decomposition approved for execution",
+  },
+  {
+    name: "merged-unverified",
+    color: "0EA5E9",
+    description: "Merged by agent, awaiting verification",
+  },
+  { name: "verified", color: "16A34A", description: "Verified after merge" },
+  {
+    name: "verification-failed",
+    color: "DC2626",
+    description: "Verification failed after merge",
+  },
 ];
 
 /**
@@ -28,13 +49,22 @@ export async function POST() {
 
       for (const label of LABELS) {
         try {
-          await execFileAsync("gh", [
-            "label", "create", label.name,
-            "--repo", project.repo,
-            "--color", label.color,
-            "--description", label.description,
-            "--force",
-          ], { timeout: 10_000 });
+          await execFileAsync(
+            "gh",
+            [
+              "label",
+              "create",
+              label.name,
+              "--repo",
+              project.repo,
+              "--color",
+              label.color,
+              "--description",
+              label.description,
+              "--force",
+            ],
+            { timeout: 10_000 },
+          );
           results.push({ repo: project.repo, label: label.name, status: "created" });
         } catch {
           results.push({ repo: project.repo, label: label.name, status: "exists" });
