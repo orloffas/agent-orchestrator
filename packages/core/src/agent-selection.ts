@@ -1,6 +1,7 @@
 import {
   normalizeAgentPermissionMode,
   type AgentPermissionMode,
+  type AgentReasoningEffort,
   type AgentSpecificConfig,
   type CliModelDefaults,
   type DefaultPlugins,
@@ -36,6 +37,7 @@ export interface ResolvedAgentSelection {
   agentName: string;
   agentConfig: AgentSpecificConfig;
   model?: string;
+  reasoningEffort?: AgentReasoningEffort;
   permissions?: AgentPermissionMode;
   subagent?: string;
 }
@@ -114,6 +116,22 @@ export function resolveAgentSelection(params: {
     agentConfig.model = model;
   }
 
+  const reasoningEffort =
+    role === "orchestrator"
+      ? (cliModelConfig.orchestratorReasoningEffort ??
+        cliModelConfig.reasoningEffort ??
+        roleAgentConfig.orchestratorReasoningEffort ??
+        roleAgentConfig.reasoningEffort ??
+        sharedConfig.orchestratorReasoningEffort ??
+        sharedConfig.reasoningEffort)
+      : (cliModelConfig.reasoningEffort ??
+        roleAgentConfig.reasoningEffort ??
+        sharedConfig.reasoningEffort);
+
+  if (reasoningEffort !== undefined) {
+    agentConfig.reasoningEffort = reasoningEffort;
+  }
+
   const permissions = normalizeAgentPermissionMode(
     typeof agentConfig.permissions === "string" ? agentConfig.permissions : undefined,
   );
@@ -128,6 +146,7 @@ export function resolveAgentSelection(params: {
     agentName,
     agentConfig,
     model,
+    reasoningEffort,
     permissions,
     subagent,
   };

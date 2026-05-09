@@ -75,6 +75,27 @@ describe("resolveAgentSelection — modelByCli", () => {
     expect(out.agentName).toBe("mock-agent");
   });
 
+  it("resolves worker reasoning effort from modelByCli", () => {
+    const out = resolveAgentSelection({
+      role: "worker",
+      project: { ...baseProject },
+      defaults: {
+        runtime: "t",
+        agent: "codex",
+        workspace: "w",
+        notifiers: [],
+        modelByCli: {
+          codex: { model: "gpt-5.4", reasoningEffort: "xhigh" },
+        },
+      },
+    });
+
+    expect(out.model).toBe("gpt-5.4");
+    expect(out.reasoningEffort).toBe("xhigh");
+    expect(out.agentConfig.model).toBe("gpt-5.4");
+    expect(out.agentConfig.reasoningEffort).toBe("xhigh");
+  });
+
   it("uses CLI-specific worker model before generic shared model", () => {
     const out = resolveAgentSelection({
       role: "worker",
@@ -181,6 +202,32 @@ describe("resolveAgentSelection — modelByCli", () => {
     expect(out.agentName).toBe("codex");
     expect(out.model).toBe("gpt-5-codex");
     expect(out.agentConfig.model).toBe("gpt-5-codex");
+  });
+
+  it("resolves orchestrator reasoning effort from modelByCli", () => {
+    const out = resolveAgentSelection({
+      role: "orchestrator",
+      project: { ...baseProject },
+      defaults: {
+        runtime: "t",
+        agent: "codex",
+        workspace: "w",
+        notifiers: [],
+        modelByCli: {
+          codex: {
+            model: "gpt-5.4",
+            reasoningEffort: "high",
+            orchestratorModel: "gpt-5.5",
+            orchestratorReasoningEffort: "xhigh",
+          },
+        },
+      },
+    });
+
+    expect(out.model).toBe("gpt-5.5");
+    expect(out.reasoningEffort).toBe("xhigh");
+    expect(out.agentConfig.model).toBe("gpt-5.5");
+    expect(out.agentConfig.reasoningEffort).toBe("xhigh");
   });
 
   it("prefers cli model over shared orchestratorModel when cli orchestratorModel is absent", () => {

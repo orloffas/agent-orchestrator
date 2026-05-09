@@ -1093,9 +1093,7 @@ describe("spawn", () => {
     const session = await sm.spawn({ projectId: "my-app", prompt: "Audit prompt permissions" });
 
     const launchArgs = vi.mocked(mockAgent.getLaunchCommand).mock.calls[0][0];
-    expect(launchArgs.systemPromptFile).toBe(
-      join(promptDir, `worker-prompt-${session.id}.md`),
-    );
+    expect(launchArgs.systemPromptFile).toBe(join(promptDir, `worker-prompt-${session.id}.md`));
     expect(statSync(promptDir).mode & 0o777).toBe(0o700);
     expect(statSync(launchArgs.systemPromptFile!).mode & 0o777).toBe(0o600);
   });
@@ -1104,7 +1102,10 @@ describe("spawn", () => {
     const projectBaseDir = getProjectBaseDir(config.configPath, config.projects["my-app"].path);
     mkdirSync(projectBaseDir, { recursive: true });
     writeFileSync(join(projectBaseDir, "prompts"), "not a directory", "utf-8");
-    const managedWsPath = join(getWorktreesDir(config.configPath, config.projects["my-app"].path), "app-1");
+    const managedWsPath = join(
+      getWorktreesDir(config.configPath, config.projects["my-app"].path),
+      "app-1",
+    );
     const managedWorkspace: Workspace = {
       ...mockWorkspace,
       create: vi.fn().mockResolvedValue({
@@ -1126,7 +1127,9 @@ describe("spawn", () => {
 
     const sm = createSessionManager({ config, registry: registryWithManagedWorkspace });
 
-    await expect(sm.spawn({ projectId: "my-app", prompt: "Fix prompt creation" })).rejects.toThrow();
+    await expect(
+      sm.spawn({ projectId: "my-app", prompt: "Fix prompt creation" }),
+    ).rejects.toThrow();
 
     expect(managedWorkspace.destroy).toHaveBeenCalled();
     expect(mockRuntime.create).not.toHaveBeenCalled();
@@ -1139,7 +1142,10 @@ describe("spawn", () => {
     const promptPath = join(promptDir, "worker-prompt-app-1.md");
     mkdirSync(promptDir, { recursive: true });
     mkdirSync(promptPath);
-    const managedWsPath = join(getWorktreesDir(config.configPath, config.projects["my-app"].path), "app-1");
+    const managedWsPath = join(
+      getWorktreesDir(config.configPath, config.projects["my-app"].path),
+      "app-1",
+    );
     const managedWorkspace: Workspace = {
       ...mockWorkspace,
       create: vi.fn().mockResolvedValue({
@@ -1161,7 +1167,9 @@ describe("spawn", () => {
 
     const sm = createSessionManager({ config, registry: registryWithManagedWorkspace });
 
-    await expect(sm.spawn({ projectId: "my-app", prompt: "Fix partial prompt cleanup" })).rejects.toThrow();
+    await expect(
+      sm.spawn({ projectId: "my-app", prompt: "Fix partial prompt cleanup" }),
+    ).rejects.toThrow();
 
     expect(existsSync(promptPath)).toBe(false);
     expect(managedWorkspace.destroy).toHaveBeenCalled();
@@ -1174,7 +1182,10 @@ describe("spawn", () => {
       ...mockRuntime,
       create: vi.fn().mockRejectedValue(new Error("runtime create failed")),
     };
-    const managedWsPath = join(getWorktreesDir(config.configPath, config.projects["my-app"].path), "app-1");
+    const managedWsPath = join(
+      getWorktreesDir(config.configPath, config.projects["my-app"].path),
+      "app-1",
+    );
     const managedWorkspace: Workspace = {
       ...mockWorkspace,
       create: vi.fn().mockResolvedValue({
@@ -1335,7 +1346,9 @@ describe("spawn", () => {
       WORKER_BOOT_PROMPT,
     );
     const launchArgs = vi.mocked(mockAgent.getLaunchCommand).mock.calls[0][0];
-    expect(readFileSync(launchArgs.systemPromptFile!, "utf-8")).toContain("Fix cursor prompt delivery");
+    expect(readFileSync(launchArgs.systemPromptFile!, "utf-8")).toContain(
+      "Fix cursor prompt delivery",
+    );
     vi.useRealTimers();
   });
 
@@ -4002,6 +4015,7 @@ describe("spawnOrchestrator", () => {
           agentConfig: {
             model: "worker-model",
             orchestratorModel: "orchestrator-model",
+            orchestratorReasoningEffort: "xhigh",
           },
         },
       },
@@ -4014,7 +4028,7 @@ describe("spawnOrchestrator", () => {
     await sm.spawnOrchestrator({ projectId: "my-app" });
 
     expect(mockAgent.getLaunchCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "orchestrator-model" }),
+      expect.objectContaining({ model: "orchestrator-model", reasoningEffort: "xhigh" }),
     );
   });
 
@@ -4026,6 +4040,7 @@ describe("spawnOrchestrator", () => {
         modelByCli: {
           "mock-agent": {
             model: "cli-worker-default",
+            reasoningEffort: "xhigh",
           },
         },
       },
@@ -4038,7 +4053,7 @@ describe("spawnOrchestrator", () => {
     await sm.spawn({ projectId: "my-app" });
 
     expect(mockAgent.getLaunchCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "cli-worker-default" }),
+      expect.objectContaining({ model: "cli-worker-default", reasoningEffort: "xhigh" }),
     );
   });
 
@@ -4050,6 +4065,7 @@ describe("spawnOrchestrator", () => {
         modelByCli: {
           "mock-agent": {
             orchestratorModel: "default-orchestrator-model",
+            orchestratorReasoningEffort: "high",
           },
         },
       },
@@ -4060,6 +4076,7 @@ describe("spawnOrchestrator", () => {
           modelByCli: {
             "mock-agent": {
               orchestratorModel: "project-orchestrator-model",
+              orchestratorReasoningEffort: "xhigh",
             },
           },
         },
@@ -4073,7 +4090,10 @@ describe("spawnOrchestrator", () => {
     await sm.spawnOrchestrator({ projectId: "my-app" });
 
     expect(mockAgent.getLaunchCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "project-orchestrator-model" }),
+      expect.objectContaining({
+        model: "project-orchestrator-model",
+        reasoningEffort: "xhigh",
+      }),
     );
   });
 
@@ -4583,7 +4603,11 @@ describe("restore", () => {
     const wsPath = join(tmpDir, "ws-app-restore-no-file-support");
     mkdirSync(wsPath, { recursive: true });
     const promptPath = join(tmpDir, "worker-prompt-app-1.md");
-    writeFileSync(promptPath, "Full restored worker prompt\nFix restored minimax assignment", "utf-8");
+    writeFileSync(
+      promptPath,
+      "Full restored worker prompt\nFix restored minimax assignment",
+      "utf-8",
+    );
     const noFileAgent: Agent = {
       ...mockAgent,
       supportsSystemPromptFile: false,
@@ -4977,6 +5001,29 @@ describe("restore", () => {
   it("uses getRestoreCommand when available", async () => {
     const wsPath = join(tmpDir, "ws-app-1");
     mkdirSync(wsPath, { recursive: true });
+    const configWithCliRestoreDefaults: OrchestratorConfig = {
+      ...config,
+      defaults: {
+        ...config.defaults,
+        modelByCli: {
+          "mock-agent": {
+            model: "worker-model",
+            reasoningEffort: "high",
+            orchestratorModel: "orchestrator-model",
+            orchestratorReasoningEffort: "xhigh",
+          },
+        },
+      },
+      projects: {
+        ...config.projects,
+        "my-app": {
+          ...config.projects["my-app"],
+          agentConfig: {
+            permissions: "suggest",
+          },
+        },
+      },
+    };
 
     const mockAgentWithRestore: Agent = {
       ...mockAgent,
@@ -4998,13 +5045,26 @@ describe("restore", () => {
       branch: "feat/TEST-1",
       status: "errored",
       project: "my-app",
+      role: "orchestrator",
       runtimeHandle: JSON.stringify(makeHandle("rt-old")),
     });
 
-    const sm = createSessionManager({ config, registry: registryWithAgentRestore });
+    const sm = createSessionManager({
+      config: configWithCliRestoreDefaults,
+      registry: registryWithAgentRestore,
+    });
     await sm.restore("app-1");
 
-    expect(mockAgentWithRestore.getRestoreCommand).toHaveBeenCalled();
+    expect(mockAgentWithRestore.getRestoreCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "app-1" }),
+      expect.objectContaining({
+        agentConfig: expect.objectContaining({
+          model: "orchestrator-model",
+          permissions: "permissionless",
+          reasoningEffort: "xhigh",
+        }),
+      }),
+    );
     // Verify runtime.create was called with the restore command
     const createCall = (mockRuntime.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.launchCommand).toBe("claude --resume abc123");
@@ -5078,13 +5138,8 @@ describe("restore", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       await restorePromise;
 
-      expect(mockSCM.resolvePR).toHaveBeenCalledWith(
-        "99",
-        config.projects["my-app"],
-      );
-      expect(mockSCM.getPRState).toHaveBeenCalledWith(
-        expect.objectContaining({ number: 99 }),
-      );
+      expect(mockSCM.resolvePR).toHaveBeenCalledWith("99", config.projects["my-app"]);
+      expect(mockSCM.getPRState).toHaveBeenCalledWith(expect.objectContaining({ number: 99 }));
       expect(runtimeWithQueuedOutput.sendMessage).toHaveBeenCalledWith(
         makeHandle("rt-1"),
         expect.stringContaining("PR #99"),
@@ -5975,7 +6030,9 @@ describe("claimPR sendInitialMessage", () => {
     };
     const agentWithDeadProcess: Agent = {
       ...mockAgent,
-      isProcessRunning: vi.fn().mockImplementation(async (handle: RuntimeHandle) => handle.id !== "rt-dead"),
+      isProcessRunning: vi
+        .fn()
+        .mockImplementation(async (handle: RuntimeHandle) => handle.id !== "rt-dead"),
     };
 
     writeMetadata(sessionsDir, "app-restore-pr", {

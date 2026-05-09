@@ -1233,6 +1233,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       prompt: launchPrompt,
       permissions: selection.permissions,
       model: selection.model,
+      reasoningEffort: selection.reasoningEffort,
       subagent: spawnConfig.subagent ?? selection.subagent,
     };
 
@@ -1591,6 +1592,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       },
       permissions: "permissionless" as const,
       model: selection.model,
+      reasoningEffort: selection.reasoningEffort,
       systemPromptFile,
       subagent: selection.subagent,
     };
@@ -2968,11 +2970,15 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       prompt: restoredPrompt,
       permissions: selection.role === "orchestrator" ? "permissionless" : selection.permissions,
       model: selection.model,
+      reasoningEffort: selection.reasoningEffort,
       subagent: selection.subagent,
     };
 
     if (plugins.agent.getRestoreCommand) {
-      const restoreCmd = await plugins.agent.getRestoreCommand(session, project);
+      const restoreCmd = await plugins.agent.getRestoreCommand(
+        session,
+        agentLaunchConfig.projectConfig,
+      );
       if (restoreCmd) {
         launchCommand = restoreCmd;
       } else {

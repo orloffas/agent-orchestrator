@@ -25,10 +25,17 @@ import { randomBytes } from "node:crypto";
 
 const execFileAsync = promisify(execFile);
 
-function normalizePermissionMode(mode: string | undefined): "permissionless" | "default" | "auto-edit" | "suggest" | undefined {
+function normalizePermissionMode(
+  mode: string | undefined,
+): "permissionless" | "default" | "auto-edit" | "suggest" | undefined {
   if (!mode) return undefined;
   if (mode === "skip") return "permissionless";
-  if (mode === "permissionless" || mode === "default" || mode === "auto-edit" || mode === "suggest") {
+  if (
+    mode === "permissionless" ||
+    mode === "default" ||
+    mode === "auto-edit" ||
+    mode === "suggest"
+  ) {
     return mode;
   }
   return undefined;
@@ -407,11 +414,7 @@ async function setupCodexWorkspace(workspacePath: string): Promise<void> {
   // 1. Write shared wrappers to ~/.ao/bin/
   await mkdir(AO_BIN_DIR, { recursive: true });
 
-  await atomicWriteFile(
-    join(AO_BIN_DIR, "ao-metadata-helper.sh"),
-    AO_METADATA_HELPER,
-    0o755,
-  );
+  await atomicWriteFile(join(AO_BIN_DIR, "ao-metadata-helper.sh"), AO_METADATA_HELPER, 0o755);
 
   // Only write wrappers if they don't exist or are outdated (check marker)
   const markerPath = join(AO_BIN_DIR, ".ao-version");
@@ -525,10 +528,7 @@ async function collectJsonlFiles(dir: string, depth = 0): Promise<string[]> {
  * entry matching the given workspace path. Reads only the first 4 KB
  * to avoid loading large rollout files into memory.
  */
-async function sessionFileMatchesCwd(
-  filePath: string,
-  workspacePath: string,
-): Promise<boolean> {
+async function sessionFileMatchesCwd(filePath: string, workspacePath: string): Promise<boolean> {
   try {
     // Read only the first 4 KB — session_meta is always in the first few lines.
     // Avoids loading large rollout files (100 MB+) into memory.
@@ -702,7 +702,8 @@ export async function resolveCodexBinary(options: { nodeExecPath?: string } = {}
     "/opt/hostedtoolcache/node/22.22.1/x64/bin/codex",
     "/opt/hostedtoolcache/node/22.20.0/x64/bin/codex",
     // npm exec fallback — returns the npm-resolved codex (respects package.json bin)
-    ...(process.env.PATH || "").split(":")
+    ...(process.env.PATH || "")
+      .split(":")
       .filter((p) => p.includes("node_modules") && p.includes(".bin"))
       .map((p) => join(p, "codex")),
   ];
@@ -738,16 +739,40 @@ function appendApprovalFlags(parts: string[], permissions: string | undefined): 
   }
 }
 
+function normalizeReasoningEffort(
+  effort: string | undefined,
+): "low" | "medium" | "high" | "xhigh" | undefined {
+  if (!effort) return undefined;
+  const normalized = effort.toLowerCase();
+  if (
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "xhigh"
+  ) {
+    return normalized;
+  }
+  throw new Error(`Unsupported Codex reasoning effort: ${effort}`);
+}
+
 /** Append model and reasoning flags to a command parts array */
-function appendModelFlags(parts: string[], model: string | undefined): void {
-  if (!model) return;
-  parts.push("--model", shellEscape(model));
+function appendModelFlags(
+  parts: string[],
+  model: string | undefined,
+  reasoningEffort?: string,
+): void {
+  if (model) {
+    parts.push("--model", shellEscape(model));
+  }
 
   // Auto-detect o-series models and enable reasoning via config override.
   // Codex does not have a --reasoning flag; reasoning is controlled via
   // the model_reasoning_effort config key.
-  if (/^o[34]/i.test(model)) {
-    parts.push("-c", "model_reasoning_effort=high");
+  const effectiveReasoningEffort =
+    normalizeReasoningEffort(reasoningEffort) ??
+    (model && /^o[34]/i.test(model) ? "high" : undefined);
+  if (effectiveReasoningEffort) {
+    parts.push("-c", `model_reasoning_effort=${effectiveReasoningEffort}`);
   }
 }
 
@@ -771,7 +796,10 @@ async function findCodexSessionFileCached(workspacePath: string): Promise<string
     return cached.path;
   }
   const result = await findCodexSessionFile(workspacePath);
-  sessionFileCache.set(workspacePath, { path: result, expiry: Date.now() + SESSION_FILE_CACHE_TTL_MS });
+  sessionFileCache.set(workspacePath, {
+    path: result,
+    expiry: Date.now() + SESSION_FILE_CACHE_TTL_MS,
+  });
   return result;
 }
 
@@ -792,7 +820,7 @@ function createCodexAgent(): Agent {
       appendNoUpdateCheckFlag(parts);
 
       appendApprovalFlags(parts, config.permissions);
-      appendModelFlags(parts, config.model);
+      appendModelFlags(parts, config.model, config.reasoningEffort);
 
       if (config.systemPromptFile) {
         // Codex reads developer instructions from a file via config override
@@ -857,7 +885,10 @@ function createCodexAgent(): Agent {
       return "active";
     },
 
-    async getActivityState(session: Session, readyThresholdMs?: number): Promise<ActivityDetection | null> {
+    async getActivityState(
+      session: Session,
+      readyThresholdMs?: number,
+    ): Promise<ActivityDetection | null> {
       const threshold = readyThresholdMs ?? DEFAULT_READY_THRESHOLD_MS;
 
       // Check if process is running first
@@ -994,7 +1025,11 @@ function createCodexAgent(): Agent {
 
       appendApprovalFlags(parts, project.agentConfig?.permissions);
       const effectiveModel = (project.agentConfig?.model ?? data.model) as string | undefined;
-      appendModelFlags(parts, effectiveModel ?? undefined);
+      appendModelFlags(
+        parts,
+        effectiveModel ?? undefined,
+        project.agentConfig?.reasoningEffort as string | undefined,
+      );
 
       // Positional threadId goes last, after all flags
       parts.push(shellEscape(data.threadId));

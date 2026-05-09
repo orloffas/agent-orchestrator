@@ -445,6 +445,8 @@ describe("Config Schema Validation", () => {
           agentConfig: {
             model: "worker-model",
             orchestratorModel: "orchestrator-model",
+            reasoningEffort: "high",
+            orchestratorReasoningEffort: "xhigh",
           },
         },
       },
@@ -453,6 +455,8 @@ describe("Config Schema Validation", () => {
     const validated = validateConfig(config);
     expect(validated.projects.proj1.agentConfig?.model).toBe("worker-model");
     expect(validated.projects.proj1.agentConfig?.orchestratorModel).toBe("orchestrator-model");
+    expect(validated.projects.proj1.agentConfig?.reasoningEffort).toBe("high");
+    expect(validated.projects.proj1.agentConfig?.orchestratorReasoningEffort).toBe("xhigh");
   });
 
   it("accepts CLI-keyed model defaults at defaults and project scope", () => {
@@ -461,6 +465,7 @@ describe("Config Schema Validation", () => {
         modelByCli: {
           codex: {
             model: "gpt-5-codex",
+            reasoningEffort: "xhigh",
           },
         },
       },
@@ -473,6 +478,8 @@ describe("Config Schema Validation", () => {
             "claude-code": {
               model: "claude-sonnet-4-20250514",
               orchestratorModel: "claude-opus-4-20250514",
+              reasoningEffort: "medium",
+              orchestratorReasoningEffort: "high",
             },
           },
         },
@@ -481,11 +488,16 @@ describe("Config Schema Validation", () => {
 
     const validated = validateConfig(config);
     expect(validated.defaults.modelByCli?.codex?.model).toBe("gpt-5-codex");
+    expect(validated.defaults.modelByCli?.codex?.reasoningEffort).toBe("xhigh");
     expect(validated.projects.proj1.modelByCli?.["claude-code"]?.model).toBe(
       "claude-sonnet-4-20250514",
     );
     expect(validated.projects.proj1.modelByCli?.["claude-code"]?.orchestratorModel).toBe(
       "claude-opus-4-20250514",
+    );
+    expect(validated.projects.proj1.modelByCli?.["claude-code"]?.reasoningEffort).toBe("medium");
+    expect(validated.projects.proj1.modelByCli?.["claude-code"]?.orchestratorReasoningEffort).toBe(
+      "high",
     );
   });
 
