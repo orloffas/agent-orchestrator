@@ -44,9 +44,12 @@ function expandPath(p: string): string {
 }
 
 export function create(config?: Record<string, unknown>): Workspace {
-  const cloneBaseDir = config?.cloneDir
-    ? expandPath(config.cloneDir as string)
-    : join(homedir(), ".ao-clones");
+  const envCloneDir = process.env.AO_WORKTREES_ROOT ?? process.env.SUPERNOVA_WORKTREES_ROOT;
+  const cloneBaseDir = envCloneDir
+    ? expandPath(envCloneDir)
+    : config?.cloneDir
+      ? expandPath(config.cloneDir as string)
+      : join(homedir(), ".ao-clones");
 
   return {
     name: "clone",

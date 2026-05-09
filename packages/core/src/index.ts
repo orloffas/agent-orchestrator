@@ -91,7 +91,12 @@ export { createPollerManager } from "./poller-manager.js";
 export type { PollerManagerDeps } from "./poller-manager.js";
 
 // Prompt builder — layered prompt composition
-export { buildPrompt, BASE_AGENT_PROMPT, CORE_AGENT_PROMPT, PR_BOILERPLATE } from "./prompt-builder.js";
+export {
+  buildPrompt,
+  BASE_AGENT_PROMPT,
+  CORE_AGENT_PROMPT,
+  PR_BOILERPLATE,
+} from "./prompt-builder.js";
 export type { PromptBuildConfig } from "./prompt-builder.js";
 
 // Decomposer — LLM-driven task decomposition
@@ -146,11 +151,7 @@ export {
 export { asValidOpenCodeSessionId } from "./opencode-session-id.js";
 
 // GitHub rate-limit detection & backoff (shared across gh-based plugins)
-export {
-  GH_RATE_LIMIT_ERROR_PATTERNS,
-  isGhRateLimitError,
-  ghSleep,
-} from "./gh-rate-limit.js";
+export { GH_RATE_LIMIT_ERROR_PATTERNS, isGhRateLimitError, ghSleep } from "./gh-rate-limit.js";
 export { normalizeOrchestratorSessionStrategy } from "./orchestrator-session-strategy.js";
 export type { NormalizedOrchestratorSessionStrategy } from "./orchestrator-session-strategy.js";
 
@@ -259,11 +260,7 @@ export {
   reviewEvidenceBundle,
   writeEvidenceBundle,
 } from "./evidence-bundle.js";
-export type {
-  EvidenceBundle,
-  CICheckEvidence,
-  EvidenceVerdict,
-} from "./evidence-bundle.js";
+export type { EvidenceBundle, CICheckEvidence, EvidenceVerdict } from "./evidence-bundle.js";
 
 // Parallel retry monitor (bd-tzt)
 export { ParallelRetryMonitor } from "./parallel-retry.js";
@@ -289,13 +286,8 @@ export { SlackOutbox } from "./slack-outbox.js";
 export type { OutboxEntry, OutboxConfig } from "./slack-outbox.js";
 
 // Pattern synthesizer — learn from outcomes (bd-89q)
-export {
-  PatternSynthesizer,
-} from "./pattern-synthesizer.js";
-export type {
-  SynthesizedPattern,
-  PatternStore,
-} from "./pattern-synthesizer.js";
+export { PatternSynthesizer } from "./pattern-synthesizer.js";
+export type { SynthesizedPattern, PatternStore } from "./pattern-synthesizer.js";
 
 // =============================================================================
 // FORK-SPECIFIC EXPORTS (extracted from upstream files for isolation)
@@ -334,7 +326,11 @@ export {
   hasActionableComments,
   batchSeverityScore,
 } from "./review-judgment-matrix.js";
-export type { CommentClass, JudgmentResult, CommentBatchJudgment } from "./review-judgment-matrix.js";
+export type {
+  CommentClass,
+  JudgmentResult,
+  CommentBatchJudgment,
+} from "./review-judgment-matrix.js";
 
 // Review SLA tracker — stuck-review SLA with escalation
 export {
@@ -367,14 +363,20 @@ export {
   abortTransaction,
   getCheckpoint,
 } from "./review-atomic-rereview.js";
-export type { AtomicRereviewDeps, AtomicRereviewResult, RereviewPhase, RereviewCheckpoint } from "./review-atomic-rereview.js";
+export type {
+  AtomicRereviewDeps,
+  AtomicRereviewResult,
+  RereviewPhase,
+  RereviewCheckpoint,
+} from "./review-atomic-rereview.js";
 
 // Terminal finalizer guard — PR health check before terminal transition
-export {
-  runTerminalGuard,
-  formatGuardResult,
+export { runTerminalGuard, formatGuardResult } from "./terminal-guard.js";
+export type {
+  TerminalGuardResult,
+  TerminalGuardBlocker,
+  TerminalGuardDeps,
 } from "./terminal-guard.js";
-export type { TerminalGuardResult, TerminalGuardBlocker, TerminalGuardDeps } from "./terminal-guard.js";
 
 // No-delta watchdog — detect agent stalls via heartbeat monitoring
 export {
@@ -385,7 +387,12 @@ export {
   emitWatchdogEvent,
   DEFAULT_NO_DELTA_CONFIG,
 } from "./no-delta-watchdog.js";
-export type { NoDeltaWatchdogConfig, NoDeltaEvaluation, NoDeltaResult, WatchdogEventDeps } from "./no-delta-watchdog.js";
+export type {
+  NoDeltaWatchdogConfig,
+  NoDeltaEvaluation,
+  NoDeltaResult,
+  WatchdogEventDeps,
+} from "./no-delta-watchdog.js";
 
 // Review KPI emitter — measurable metrics for CHANGES_REQUESTED stalls
 export {
@@ -451,3 +458,26 @@ export {
 // workspace-worktree plugin so the same recovery logic is in one place.
 export { findRepoPathForWorktree } from "./utils/worktree-git.js";
 export type { RepoPathResult } from "./utils/worktree-git.js";
+
+// Portable workspace allocator — shared by AO worker spawn, CLI diagnostics and workspace plugins.
+export {
+  branchSlug,
+  doctorAgentWorkspaceRoots,
+  leasePath,
+  listWorkspaceLeases,
+  lockPath,
+  makeSessionBranch,
+  readWorkspaceLease,
+  releaseWorkspaceLease,
+  repoSlug,
+  resolveAgentWorkspaceRoots,
+  safePathSegment,
+  withWorkspaceLock,
+  writeWorkspaceLease,
+} from "./agent-workspace-allocator.js";
+export type {
+  AgentWorkspaceRoots,
+  ResolveAgentWorkspaceRootsInput,
+  WorkspaceDoctorResult,
+  WorkspaceLease,
+} from "./agent-workspace-allocator.js";

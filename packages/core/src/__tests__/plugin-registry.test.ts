@@ -52,7 +52,10 @@ describe("isPackageResolutionFailure", () => {
 
   it("returns false for init/runtime errors without resolution shape", () => {
     expect(
-      isPackageResolutionFailure(new Error("initialize() failed"), "@jleechanorg/ao-plugin-agent-gemini"),
+      isPackageResolutionFailure(
+        new Error("initialize() failed"),
+        "@jleechanorg/ao-plugin-agent-gemini",
+      ),
     ).toBe(false);
   });
 
@@ -170,15 +173,15 @@ describe("loadBuiltins", () => {
     await registry.loadBuiltins(
       undefined,
       async () => {
-        throw new Error("ERR_MODULE_NOT_FOUND: cannot find package '@jleechanorg/ao-plugin-runtime-tmux'");
+        throw new Error(
+          "ERR_MODULE_NOT_FOUND: cannot find package '@jleechanorg/ao-plugin-runtime-tmux'",
+        );
       },
       async () => null,
     );
     // Must log a warning, not silently swallow
     expect(warnSpy).toHaveBeenCalled();
-    const registryWarn = warnSpy.mock.calls.find((c) =>
-      String(c[0]).includes("[plugin-registry]"),
-    );
+    const registryWarn = warnSpy.mock.calls.find((c) => String(c[0]).includes("[plugin-registry]"));
     expect(registryWarn?.[0]).toContain("@jleechanorg/ao-plugin-runtime-tmux");
     warnSpy.mockRestore();
   });
@@ -212,7 +215,9 @@ describe("loadBuiltins", () => {
     await registry.loadBuiltins(
       undefined,
       async () => {
-        const err = new Error("ERR_MODULE_NOT_FOUND: cannot find package '@jleechanorg/ao-plugin-agent-gemini'");
+        const err = new Error(
+          "ERR_MODULE_NOT_FOUND: cannot find package '@jleechanorg/ao-plugin-agent-gemini'",
+        );
         (err as NodeJS.ErrnoException).code = "ERR_MODULE_NOT_FOUND";
         throw err;
       },
@@ -238,7 +243,9 @@ describe("loadBuiltins", () => {
     await registry.loadBuiltins(
       undefined,
       async () => {
-        const err = new Error("ERR_MODULE_NOT_FOUND: cannot find package '@jleechanorg/ao-plugin-agent-gemini'");
+        const err = new Error(
+          "ERR_MODULE_NOT_FOUND: cannot find package '@jleechanorg/ao-plugin-agent-gemini'",
+        );
         (err as NodeJS.ErrnoException).code = "ERR_MODULE_NOT_FOUND";
         throw err;
       },
@@ -304,9 +311,7 @@ describe("loadBuiltins", () => {
     );
 
     expect(fallbackSpy).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("plugin initialize() failed"),
-    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("plugin initialize() failed"));
     warnSpy.mockRestore();
   });
 
@@ -510,6 +515,43 @@ describe("extractPluginConfig (via register with config)", () => {
     registry.register(plugin);
 
     expect(plugin.create).toHaveBeenCalledWith(undefined);
+  });
+
+  it("passes portable workspace allocator roots to workspace plugins", async () => {
+    const registry = createPluginRegistry();
+    const worktreePlugin = makePlugin("workspace", "worktree");
+    const config = makeOrchestratorConfig({
+      workspaceAllocator: {
+        projectsRoot: "/roots/projects",
+        worktreesRoot: "/roots/worktrees",
+        stateRoot: "/roots/state",
+        artifactsRoot: "/roots/artifacts",
+      },
+      plugins: {
+        "workspace-worktree": {
+          worktreeDir: "/explicit/worktrees",
+          cleanupPolicy: "manual",
+        },
+      },
+    });
+
+    await registry.loadBuiltins(
+      config,
+      async (pkg: string) => {
+        if (pkg === "@jleechanorg/ao-plugin-workspace-worktree") return worktreePlugin;
+        throw new Error(`Not found: ${pkg}`);
+      },
+      async () => null,
+    );
+
+    expect(worktreePlugin.create).toHaveBeenCalledWith({
+      projectsRoot: "/roots/projects",
+      worktreesRoot: "/roots/worktrees",
+      stateRoot: "/roots/state",
+      artifactsRoot: "/roots/artifacts",
+      worktreeDir: "/explicit/worktrees",
+      cleanupPolicy: "manual",
+    });
   });
 });
 

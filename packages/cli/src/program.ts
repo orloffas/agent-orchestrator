@@ -12,6 +12,7 @@ import { registerLifecycleWorker } from "./commands/lifecycle-worker.js";
 import { registerVerify } from "./commands/verify.js";
 import { registerDoctor } from "./commands/doctor.js";
 import { registerUpdate } from "./commands/update.js";
+import { registerAgentWorkspace } from "./commands/agent-workspace.js";
 import { registerSkeptic } from "./commands/skeptic.js";
 import { registerSkepticInstall } from "./commands/skeptic/install.js";
 import { getConfigInstruction } from "./lib/config-instruction.js";
@@ -57,6 +58,7 @@ export function buildProgram(): Command {
   registerLifecycleWorker(program);
   registerVerify(program);
   registerDoctor(program);
+  registerAgentWorkspace(program);
   registerUpdate(program);
   const skepticCmd = registerSkeptic(program);
   registerSkepticInstall(skepticCmd);

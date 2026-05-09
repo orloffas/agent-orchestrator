@@ -53,12 +53,12 @@ export type SessionStatus =
  * SR-prtype (84.45, n=16) is the safe default — no per-type routing is statistically justified.
  */
 export type TechniqueType =
-  | "SR-prtype"    // Self-Refine with PR-type classification (best: 84.45, n=16)
-  | "SR-fewshot"   // Self-Refine with single exemplar
-  | "SR"           // Self-Refine (baseline: 81.23, n=15)
-  | "ET"           // Extended Thinking (79.38, n=15)
-  | "PRM"          // Process Reward Model (80.15, n=28)
-  | "default";     // Alias for SR-prtype
+  | "SR-prtype" // Self-Refine with PR-type classification (best: 84.45, n=16)
+  | "SR-fewshot" // Self-Refine with single exemplar
+  | "SR" // Self-Refine (baseline: 81.23, n=15)
+  | "ET" // Extended Thinking (79.38, n=15)
+  | "PRM" // Process Reward Model (80.15, n=28)
+  | "default"; // Alias for SR-prtype
 
 /** PR-type taxonomy for technique routing (ZFC: delegated to model API) */
 export type PrType =
@@ -546,6 +546,10 @@ export interface WorkspaceInfo {
   projectId: string;
   /** Owning repo path — populated by workspace-worktree so destroy() can use it directly. */
   repoPath?: string;
+  /** Lease ID written by the portable workspace allocator. */
+  leaseId?: string;
+  /** True when the allocator had to use writable mirror/clone storage instead of the seed checkout. */
+  readOnlyGitFallback?: boolean;
 }
 
 // =============================================================================
@@ -706,9 +710,13 @@ export interface SCM {
   /** Fetch issue comments authored by the skeptic agent.
    *  Used by the skeptic-advice reaction to detect new FAIL verdicts and
    *  extract structured guidance for workers. */
-  getSkepticComments?(pr: PRInfo): Promise<Array<{ id: number; body: string; user: { login: string } }>>;
+  getSkepticComments?(
+    pr: PRInfo,
+  ): Promise<Array<{ id: number; body: string; user: { login: string } }>>;
   /** Fetch all PR issue comments without author filtering. Used by /skeptic comment trigger. */
-  listPRComments?(pr: PRInfo): Promise<Array<{ id: number; body: string; user: { login: string } }>>;
+  listPRComments?(
+    pr: PRInfo,
+  ): Promise<Array<{ id: number; body: string; user: { login: string } }>>;
 
   // --- Review Actions (bd-yjo: atomic re-review transaction) ---
 
@@ -1108,7 +1116,15 @@ export interface ReactionConfig {
   auto: boolean;
 
   /** What to do: send message to agent, notify human, auto-merge, request-merge, parallel-retry, skeptic-review, respawn-for-review, claim-verification */
-  action: "send-to-agent" | "notify" | "auto-merge" | "request-merge" | "parallel-retry" | "skeptic-review" | "respawn-for-review" | "claim-verification";
+  action:
+    | "send-to-agent"
+    | "notify"
+    | "auto-merge"
+    | "request-merge"
+    | "parallel-retry"
+    | "skeptic-review"
+    | "respawn-for-review"
+    | "claim-verification";
 
   /** Message to send (for send-to-agent) */
   message?: string;
@@ -1291,6 +1307,9 @@ export interface OrchestratorConfig {
 
   /** Plugin-specific configs (e.g., scm-github.extraBotAuthors) */
   plugins?: Record<string, Record<string, unknown>>;
+
+  /** Portable workspace allocator roots and behavior. */
+  workspaceAllocator?: WorkspaceAllocatorConfig;
 
   /**
    * Global worktree base directory. Can be overridden per-project via
@@ -1558,6 +1577,9 @@ export interface ProjectConfig {
    */
   worktreeDir?: string;
 
+  /** Project-level portable workspace allocator root overrides. */
+  workspaceAllocator?: WorkspaceAllocatorConfig;
+
   /**
    * Persistent spawn queue and active-session cap for this project.
    * When enabled, AO queues new spawn requests instead of spawning past the cap.
@@ -1598,6 +1620,17 @@ export interface ProjectConfig {
    * Per-type routing requires statistically significant matched-PR evidence.
    */
   technique?: TechniqueConfig;
+}
+
+export interface WorkspaceAllocatorConfig {
+  /** Seed/default-branch checkouts or writable local mirrors. */
+  projectsRoot?: string;
+  /** Writable per-session workspaces. */
+  worktreesRoot?: string;
+  /** Locks, leases, metadata and writable bare mirrors. */
+  stateRoot?: string;
+  /** Logs, evidence and generated outputs. */
+  artifactsRoot?: string;
 }
 
 /** Merge gate configuration (bd-uxs.8) */
@@ -1909,6 +1942,10 @@ export interface SessionMetadata {
   requestedTask?: string;
   /** Full composed worker prompt artifact written at spawn time for audit/debugging. */
   composedPromptPath?: string;
+  /** Portable workspace allocator lease id, usually equal to the AO session id. */
+  workspaceLeaseId?: string;
+  /** True when allocator used writable Git storage because the seed checkout .git was read-only. */
+  readOnlyGitFallback?: string;
 }
 
 // =============================================================================

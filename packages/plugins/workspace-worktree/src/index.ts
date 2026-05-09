@@ -1,10 +1,34 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, lstatSync, symlinkSync, rmSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  symlinkSync,
+  rmSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+} from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve, basename, dirname } from "node:path";
 import { homedir } from "node:os";
-import { findRepoPathForWorktree, type PluginModule, type Workspace, type WorkspaceCreateConfig, type WorkspaceInfo, type ProjectConfig } from "@jleechanorg/ao-core";
+import {
+  findRepoPathForWorktree,
+  readWorkspaceLease,
+  repoSlug,
+  resolveAgentWorkspaceRoots,
+  withWorkspaceLock,
+  writeWorkspaceLease,
+  type PluginModule,
+  type Workspace,
+  type WorkspaceAllocatorConfig,
+  type WorkspaceCreateConfig,
+  type WorkspaceInfo,
+  type ProjectConfig,
+} from "@jleechanorg/ao-core";
 
 /** Timeout for git commands (30 seconds) */
 const GIT_TIMEOUT = 30_000;
@@ -122,6 +146,75 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout.trimEnd();
 }
 
+async function canWriteGitMetadata(repoPath: string): Promise<boolean> {
+  const dotGit = join(repoPath, ".git");
+  const probe = join(dotGit, `.ao-write-test-${process.pid}-${Date.now()}`);
+  try {
+    const fd = openSync(probe, "w");
+    closeSync(fd);
+    unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isSeedDirty(repoPath: string): Promise<boolean> {
+  try {
+    const status = await git(repoPath, "status", "--porcelain");
+    return status.trim().length > 0;
+  } catch {
+    return true;
+  }
+}
+
+async function prepareWritableMirror(
+  sourceRepoPath: string,
+  stateRoot: string,
+  repo: string,
+): Promise<string> {
+  const mirrorPath = join(stateRoot, "git", `${repoSlug(repo)}.git`);
+  mkdirSync(dirname(mirrorPath), { recursive: true });
+
+  if (existsSync(mirrorPath)) {
+    await git(mirrorPath, "fetch", "origin", "+refs/heads/*:refs/heads/*", "--prune", "--quiet");
+    return mirrorPath;
+  }
+
+  let remoteUrl: string;
+  try {
+    remoteUrl = await git(sourceRepoPath, "remote", "get-url", "origin");
+  } catch {
+    remoteUrl = sourceRepoPath;
+  }
+
+  await execFileAsync("git", ["clone", "--mirror", remoteUrl, mirrorPath], {
+    timeout: GIT_TIMEOUT,
+  });
+  return mirrorPath;
+}
+
+async function selectGitStorage(
+  repoPath: string,
+  stateRoot: string,
+  repo: string,
+): Promise<{ gitStoragePath: string; readOnlyGitFallback: boolean }> {
+  if (await canWriteGitMetadata(repoPath)) {
+    return { gitStoragePath: repoPath, readOnlyGitFallback: false };
+  }
+
+  if (await isSeedDirty(repoPath)) {
+    throw new Error(
+      `Seed checkout "${repoPath}" is dirty or unreadable while .git is read-only; refusing allocator fallback`,
+    );
+  }
+
+  return {
+    gitStoragePath: await prepareWritableMirror(repoPath, stateRoot, repo),
+    readOnlyGitFallback: true,
+  };
+}
+
 /** Timeout for tmux queries (5 seconds) */
 const TMUX_TIMEOUT = 5_000;
 
@@ -168,7 +261,9 @@ async function hasActiveTmuxSessionForWorktreeName(worktreePath: string): Promis
   const tmuxSessions = await listTmuxSessionNames();
   // null means tmux could not be queried — fail-safe: assume session may be active
   if (tmuxSessions === null) return true;
-  return tmuxSessions.some((tmuxSession) => tmuxSession === sessionName || tmuxSession.endsWith(`-${sessionName}`));
+  return tmuxSessions.some(
+    (tmuxSession) => tmuxSession === sessionName || tmuxSession.endsWith(`-${sessionName}`),
+  );
 }
 
 async function maybeRemoveStaleCheckedOutWorktree(
@@ -199,18 +294,16 @@ async function maybeRemoveStaleCheckedOutWorktree(
   // returning success, so callers only retry checkout when the blocker is gone.
   try {
     const list = await git(repoPath, "worktree", "list", "--porcelain");
-    const stillPresent = list
-      .split("\n\n")
-      .some((block) =>
-        block
-          .trim()
-          .split("\n")
-          .some(
-            (line) =>
-              line.startsWith("worktree ") &&
-              resolve(line.slice("worktree ".length).trim()) === resolvedStale,
-          ),
-      );
+    const stillPresent = list.split("\n\n").some((block) =>
+      block
+        .trim()
+        .split("\n")
+        .some(
+          (line) =>
+            line.startsWith("worktree ") &&
+            resolve(line.slice("worktree ".length).trim()) === resolvedStale,
+        ),
+    );
     return !stillPresent;
   } catch {
     // If git worktree list fails, fall back to filesystem check.
@@ -236,12 +329,15 @@ async function reuseExistingBranch(
     await git(worktreePath, "checkout", branch);
     checkoutSucceeded = true;
   } catch (checkoutErr: unknown) {
-    const checkoutMsg =
-      checkoutErr instanceof Error ? checkoutErr.message : String(checkoutErr);
+    const checkoutMsg = checkoutErr instanceof Error ? checkoutErr.message : String(checkoutErr);
     if (checkoutMsg.includes("already checked out") && checkoutMsg.includes("checked out at")) {
       let retryErr: unknown;
       try {
-        const removedStale = await maybeRemoveStaleCheckedOutWorktree(repoPath, checkoutMsg, worktreeBaseDir);
+        const removedStale = await maybeRemoveStaleCheckedOutWorktree(
+          repoPath,
+          checkoutMsg,
+          worktreeBaseDir,
+        );
         if (removedStale) {
           try {
             await git(worktreePath, "checkout", branch);
@@ -320,8 +416,8 @@ export class AmbiguousRefRenameError extends Error {
   constructor(ref: string) {
     super(
       `Ambiguous ref "${ref}": a local branch with this name conflicts with ` +
-      `the remote-tracking ref. Manually rename or delete it: git branch -m ${ref} backup/${ref}. ` +
-      `If backup/${ref} already exists, delete it first or pick a different name.`,
+        `the remote-tracking ref. Manually rename or delete it: git branch -m ${ref} backup/${ref}. ` +
+        `If backup/${ref} already exists, delete it first or pick a different name.`,
     );
     this.name = "AmbiguousRefRenameError";
     this.ref = ref;
@@ -346,11 +442,23 @@ async function disambiguateBaseRef(repoPath: string, ref: string): Promise<void>
   }
 }
 
-
 export function create(config?: Record<string, unknown>): Workspace {
-  const worktreeBaseDir = config?.worktreeDir
+  const defaultWorktreeBaseDir = config?.worktreeDir
     ? expandPath(config.worktreeDir as string)
     : join(homedir(), ".worktrees");
+  const allocatorConfig: WorkspaceAllocatorConfig = {
+    ...(typeof config?.projectsRoot === "string" ? { projectsRoot: config.projectsRoot } : {}),
+    worktreesRoot:
+      typeof config?.worktreesRoot === "string" ? config.worktreesRoot : defaultWorktreeBaseDir,
+    ...(typeof config?.stateRoot === "string" ? { stateRoot: config.stateRoot } : {}),
+    ...(typeof config?.artifactsRoot === "string" ? { artifactsRoot: config.artifactsRoot } : {}),
+  };
+  const listWorktreeBaseDir = expandPath(
+    process.env.AO_WORKTREES_ROOT?.trim() ||
+      process.env.SUPERNOVA_WORKTREES_ROOT?.trim() ||
+      allocatorConfig.worktreesRoot ||
+      defaultWorktreeBaseDir,
+  );
 
   return {
     name: "worktree",
@@ -359,220 +467,306 @@ export function create(config?: Record<string, unknown>): Workspace {
       assertSafePathSegment(cfg.projectId, "projectId");
       assertSafePathSegment(cfg.sessionId, "sessionId");
 
+      const roots = resolveAgentWorkspaceRoots({
+        configPath: cfg.project.configPath,
+        projectId: cfg.projectId,
+        project: cfg.project,
+        config: allocatorConfig,
+      });
       const repoPath = expandPath(cfg.project.path);
-      const projectWorktreeDir = join(worktreeBaseDir, cfg.projectId);
+      const projectWorktreeDir = join(roots.worktreesRoot, cfg.projectId);
       const worktreePath = join(projectWorktreeDir, cfg.sessionId);
+      const artifactsPath = join(roots.artifactsRoot, cfg.sessionId);
 
       mkdirSync(projectWorktreeDir, { recursive: true });
+      mkdirSync(artifactsPath, { recursive: true });
 
-      // Fetch latest from remote
-      try {
-        await git(repoPath, "fetch", "origin", "--quiet");
-      } catch {
-        // Fetch may fail if offline — continue anyway
-      }
+      return await withWorkspaceLock(roots.stateRoot, cfg.project.repo, async () => {
+        const existingLease = readWorkspaceLease(roots.stateRoot, cfg.sessionId);
+        const hasMatchingLease =
+          existingLease &&
+          existingLease.projectId === cfg.projectId &&
+          existingLease.branch === cfg.branch &&
+          resolve(existingLease.workspacePath) === resolve(worktreePath);
+        if (hasMatchingLease && existingLease && existsSync(existingLease.workspacePath)) {
+          return {
+            path: existingLease.workspacePath,
+            branch: existingLease.branch,
+            sessionId: existingLease.sessionId,
+            projectId: existingLease.projectId,
+            repoPath: existingLease.repoPath,
+            leaseId: existingLease.leaseId,
+            readOnlyGitFallback: existingLease.readOnlyGitFallback,
+          };
+        }
 
-      const baseRef = `origin/${cfg.project.defaultBranch}`;
+        const { gitStoragePath, readOnlyGitFallback } = await selectGitStorage(
+          repoPath,
+          roots.stateRoot,
+          cfg.project.repo,
+        );
 
-      // bd-1483: Disambiguate before git worktree add — local branch may shadow
-      // the remote-tracking ref, causing "ambiguous object name" error.
-      await disambiguateBaseRef(repoPath, baseRef);
-
-      // bd-206: Clean up any stale locked worktree entry at this path before creating.
-      // This handles the case where the directory was deleted but git still holds
-      // a lock entry ("missing but locked worktree" error).
-      // Only attempt unlock when the path is missing — if it exists, the worktree
-      // is already functional and unlock would be unnecessary.
-      if (!existsSync(worktreePath)) {
+        // Fetch latest from remote
         try {
-          await git(repoPath, "worktree", "unlock", worktreePath);
+          await git(gitStoragePath, "fetch", "origin", "--quiet");
         } catch {
-          // Best-effort — entry may not exist or already be unlocked
-        }
-      }
-
-      // Create worktree with a new branch
-      try {
-        await git(repoPath, "worktree", "add", "-b", cfg.branch, worktreePath, baseRef);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("already exists")) {
-          throw new Error(`Failed to create worktree for branch "${cfg.branch}": ${msg}`, {
-            cause: err,
-          });
+          // Fetch may fail if offline — continue anyway
         }
 
-        // Determine if this is a "path already exists" error (ghost worktree)
-        // vs "branch already exists" error.
-        // Ghost: the path exists on disk but git doesn't know about it via worktree list.
-        // In that case, if there's no active tmux session, we can safely remove it.
-        // Only trigger ghost detection when the error mentions the worktree path itself.
-        // Guard: if git worktree list fails (e.g., repo corruption), fall through to
-        // branch-exists recovery rather than propagating an unguarded error.
-        const normalizedWorktreePath = resolve(worktreePath);
-        let isGhostWorktree = false;
-        let pathCollisionErr: Error | undefined;
+        const baseRef = readOnlyGitFallback
+          ? cfg.project.defaultBranch
+          : `origin/${cfg.project.defaultBranch}`;
+
+        // bd-1483: Disambiguate before git worktree add — local branch may shadow
+        // the remote-tracking ref, causing "ambiguous object name" error.
+        if (baseRef.startsWith("origin/")) {
+          await disambiguateBaseRef(gitStoragePath, baseRef);
+        }
+
+        // bd-206: Clean up any stale locked worktree entry at this path before creating.
+        // This handles the case where the directory was deleted but git still holds
+        // a lock entry ("missing but locked worktree" error).
+        // Only attempt unlock when the path is missing — if it exists, the worktree
+        // is already functional and unlock would be unnecessary.
+        if (!existsSync(worktreePath)) {
+          try {
+            await git(gitStoragePath, "worktree", "unlock", worktreePath);
+          } catch {
+            // Best-effort — entry may not exist or already be unlocked
+          }
+        }
+
+        // Create worktree with a new branch
         try {
-          const listOutput = await git(repoPath, "worktree", "list", "--porcelain");
-          const isRegistered = listOutput
-            .split("\n")
-            .some(
-              (line) =>
-                line.startsWith("worktree ") &&
-                resolve(line.slice("worktree ".length).trim()) === normalizedWorktreePath,
-            );
-          // Only match git's actual path-collision stderr format, not the command string
-          // that appears in every Node.js execFile error. Git uses: fatal: '/path' already exists
-          if (
-            msg.includes(`'${normalizedWorktreePath}' already exists`) ||
-            msg.includes(`"${normalizedWorktreePath}" already exists`)
-          ) {
-            // Error mentions the worktree path — collision type depends on registration.
-            if (!isRegistered) {
-              isGhostWorktree = true; // Ghost: path on disk, not in git
-            } else {
-              // Registered path collision — throw explicit error, don't fall through
-              // to branch-exists path which would mask the collision.
-              pathCollisionErr = new Error(
-                `Failed to create worktree for branch "${cfg.branch}": ${msg}`,
-                { cause: err },
+          await git(gitStoragePath, "worktree", "add", "-b", cfg.branch, worktreePath, baseRef);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes("already exists")) {
+            throw new Error(`Failed to create worktree for branch "${cfg.branch}": ${msg}`, {
+              cause: err,
+            });
+          }
+
+          // Determine if this is a "path already exists" error (ghost worktree)
+          // vs "branch already exists" error.
+          // Ghost: the path exists on disk but git doesn't know about it via worktree list.
+          // In that case, if there's no active tmux session, we can safely remove it.
+          // Only trigger ghost detection when the error mentions the worktree path itself.
+          // Guard: if git worktree list fails (e.g., repo corruption), fall through to
+          // branch-exists recovery rather than propagating an unguarded error.
+          const normalizedWorktreePath = resolve(worktreePath);
+          let isGhostWorktree = false;
+          let pathCollisionErr: Error | undefined;
+          try {
+            const listOutput = await git(gitStoragePath, "worktree", "list", "--porcelain");
+            const isRegistered = listOutput
+              .split("\n")
+              .some(
+                (line) =>
+                  line.startsWith("worktree ") &&
+                  resolve(line.slice("worktree ".length).trim()) === normalizedWorktreePath,
               );
-            }
-          }
-          // else: error doesn't mention path → branch collision → isGhostWorktree stays false
-        } catch {
-          // worktree list failed (network, git bug, etc.) — determine path type from error.
-          // If the error is a path-collision (not branch-collision), we can't proceed safely
-          // because we can't distinguish ghost from registered path. Throw immediately.
-          // Only fall through for ambiguous "already exists" that might be branch-collision.
-          const isPathCollision =
-            msg.includes(`'${normalizedWorktreePath}' already exists`) ||
-            msg.includes(`"${normalizedWorktreePath}" already exists`);
-          if (isPathCollision) {
-            throw new Error(
-              `Failed to create worktree for branch "${cfg.branch}": ${msg} (ghost detection unavailable — list failed)`,
-              { cause: err },
-            );
-          }
-          // else: fall through to branch-exists recovery (could be branch collision).
-        }
-        if (pathCollisionErr) throw pathCollisionErr;
-
-        if (isGhostWorktree) {
-          // Check for active tmux session — if none, it's safe to remove the ghost.
-          const hasActiveSession = await hasActiveTmuxSessionForWorktreeName(worktreePath);
-          if (!hasActiveSession) {
-            // Ghost worktree with no active session — remove and retry once.
-            try {
-              // Use filesystem removal for ghost worktrees since git doesn't know about them.
-              rmSync(worktreePath, { recursive: true, force: true });
-            } catch {
-              // Best-effort removal
-            }
-            try {
-              await git(repoPath, "worktree", "add", "-b", cfg.branch, worktreePath, baseRef);
-            } catch (retryErr: unknown) {
-              const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-              // Ghost recovery path: if retry fails because branch is checked out
-              // elsewhere, recover using the same mechanism as branch-exists path.
-              if (
-                retryMsg.includes("already checked out") &&
-                retryMsg.includes("checked out at")
-              ) {
-                let removedStale;
-                try {
-                  removedStale = await maybeRemoveStaleCheckedOutWorktree(
-                    repoPath,
-                    retryMsg,
-                    worktreeBaseDir,
-                  );
-                  if (removedStale) {
-                    await git(repoPath, "worktree", "add", "-b", cfg.branch, worktreePath, baseRef);
-                  }
-                } catch (secondErr: unknown) {
-                  // secondErr is from maybeRemoveStaleCheckedOutWorktree itself.
-                  // Chain it to retryMsg (not retryErr) since retryErr is not relevant here.
-                  throw Object.assign(
-                    new Error(
-                      `Failed to create worktree for branch "${cfg.branch}": ${retryMsg}`,
-                    ),
-                    { cause: secondErr },
-                  );
-                }
-                if (!removedStale) {
-                  // Non-AO worktree holds the branch lock — propagate with retryErr as cause.
-                  // Throw here (outside the try/catch) so no double-wrapping occurs.
-                  throw Object.assign(
-                    new Error(
-                      `Failed to create worktree for branch "${cfg.branch}": ${retryMsg}`,
-                    ),
-                    { cause: retryErr },
-                  );
-                }
-              } else if (retryMsg.includes("A branch named")) {
-                // Ghost was removed but branch already exists — reuse existing branch.
-                // Let reuseExistingBranch errors propagate directly without double-wrapping.
-                await reuseExistingBranch(
-                  repoPath,
-                  worktreePath,
-                  cfg.branch,
-                  baseRef,
-                  worktreeBaseDir,
+            // Only match git's actual path-collision stderr format, not the command string
+            // that appears in every Node.js execFile error. Git uses: fatal: '/path' already exists
+            const isPathCollision =
+              msg.includes(`'${normalizedWorktreePath}' already exists`) ||
+              msg.includes(`"${normalizedWorktreePath}" already exists`);
+            if (isPathCollision) {
+              if (!hasMatchingLease) {
+                pathCollisionErr = new Error(
+                  `Workspace path "${normalizedWorktreePath}" already exists without a matching allocator lease; refusing to remove or reuse it automatically`,
+                  { cause: err },
                 );
+                // Error mentions the worktree path — collision type depends on registration.
+              } else if (!isRegistered) {
+                isGhostWorktree = true; // Ghost: path on disk, not in git
               } else {
-                throw new Error(
-                  `Failed to create worktree for branch "${cfg.branch}": ${retryMsg}`,
-                  { cause: retryErr },
+                // Registered path collision — throw explicit error, don't fall through
+                // to branch-exists path which would mask the collision.
+                pathCollisionErr = new Error(
+                  `Failed to create worktree for branch "${cfg.branch}": ${msg}`,
+                  { cause: err },
                 );
               }
             }
+            // else: error doesn't mention path → branch collision → isGhostWorktree stays false
+          } catch {
+            // worktree list failed (network, git bug, etc.) — determine path type from error.
+            // If the error is a path-collision (not branch-collision), we can't proceed safely
+            // because we can't distinguish ghost from registered path. Throw immediately.
+            // Only fall through for ambiguous "already exists" that might be branch-collision.
+            const isPathCollision =
+              msg.includes(`'${normalizedWorktreePath}' already exists`) ||
+              msg.includes(`"${normalizedWorktreePath}" already exists`);
+            if (isPathCollision) {
+              throw new Error(
+                `Failed to create worktree for branch "${cfg.branch}": ${msg} (ghost detection unavailable — list failed)`,
+                { cause: err },
+              );
+            }
+            // else: fall through to branch-exists recovery (could be branch collision).
+          }
+          if (pathCollisionErr) throw pathCollisionErr;
+
+          if (isGhostWorktree) {
+            // Check for active tmux session — if none, it's safe to remove the ghost.
+            const hasActiveSession = await hasActiveTmuxSessionForWorktreeName(worktreePath);
+            if (!hasActiveSession) {
+              // Ghost worktree with no active session — remove and retry once.
+              try {
+                // Use filesystem removal for ghost worktrees since git doesn't know about them.
+                rmSync(worktreePath, { recursive: true, force: true });
+              } catch {
+                // Best-effort removal
+              }
+              try {
+                await git(
+                  gitStoragePath,
+                  "worktree",
+                  "add",
+                  "-b",
+                  cfg.branch,
+                  worktreePath,
+                  baseRef,
+                );
+              } catch (retryErr: unknown) {
+                const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                // Ghost recovery path: if retry fails because branch is checked out
+                // elsewhere, recover using the same mechanism as branch-exists path.
+                if (
+                  retryMsg.includes("already checked out") &&
+                  retryMsg.includes("checked out at")
+                ) {
+                  let removedStale;
+                  try {
+                    removedStale = await maybeRemoveStaleCheckedOutWorktree(
+                      gitStoragePath,
+                      retryMsg,
+                      roots.worktreesRoot,
+                    );
+                    if (removedStale) {
+                      await git(
+                        gitStoragePath,
+                        "worktree",
+                        "add",
+                        "-b",
+                        cfg.branch,
+                        worktreePath,
+                        baseRef,
+                      );
+                    }
+                  } catch (secondErr: unknown) {
+                    // secondErr is from maybeRemoveStaleCheckedOutWorktree itself.
+                    // Chain it to retryMsg (not retryErr) since retryErr is not relevant here.
+                    throw Object.assign(
+                      new Error(
+                        `Failed to create worktree for branch "${cfg.branch}": ${retryMsg}`,
+                      ),
+                      { cause: secondErr },
+                    );
+                  }
+                  if (!removedStale) {
+                    // Non-AO worktree holds the branch lock — propagate with retryErr as cause.
+                    // Throw here (outside the try/catch) so no double-wrapping occurs.
+                    throw Object.assign(
+                      new Error(
+                        `Failed to create worktree for branch "${cfg.branch}": ${retryMsg}`,
+                      ),
+                      { cause: retryErr },
+                    );
+                  }
+                } else if (retryMsg.includes("A branch named")) {
+                  // Ghost was removed but branch already exists — reuse existing branch.
+                  // Let reuseExistingBranch errors propagate directly without double-wrapping.
+                  await reuseExistingBranch(
+                    gitStoragePath,
+                    worktreePath,
+                    cfg.branch,
+                    baseRef,
+                    roots.worktreesRoot,
+                  );
+                } else {
+                  throw new Error(
+                    `Failed to create worktree for branch "${cfg.branch}": ${retryMsg}`,
+                    { cause: retryErr },
+                  );
+                }
+              }
+            } else {
+              // Active tmux session exists — preserve worktree, let error propagate.
+              throw new Error(`Failed to create worktree for branch "${cfg.branch}": ${msg}`, {
+                cause: err,
+              });
+            }
           } else {
-            // Active tmux session exists — preserve worktree, let error propagate.
-            throw new Error(
-              `Failed to create worktree for branch "${cfg.branch}": ${msg}`,
-              { cause: err },
+            // Branch already exists — create worktree and check it out
+            await reuseExistingBranch(
+              gitStoragePath,
+              worktreePath,
+              cfg.branch,
+              baseRef,
+              roots.worktreesRoot,
             );
           }
-        } else {
-          // Branch already exists — create worktree and check it out
-          await reuseExistingBranch(
-            repoPath,
-            worktreePath,
-            cfg.branch,
-            baseRef,
-            worktreeBaseDir,
-          );
         }
-      }
 
-      // bd-uxs.7: Set up .git/info/exclude to ignore AO-managed files
-      // This prevents worktree from showing as dirty due to runtime files.
-      // Wrap in try/catch so a failure here doesn't orphan the already-created
-      // worktree — the worktree is usable even without the exclude setup.
-      try {
-        await setupAoManagedExclude(worktreePath);
-      } catch {
-        // Non-fatal: exclude setup failure doesn't prevent workspace use
-      }
+        // bd-uxs.7: Set up .git/info/exclude to ignore AO-managed files
+        // This prevents worktree from showing as dirty due to runtime files.
+        // Wrap in try/catch so a failure here doesn't orphan the already-created
+        // worktree — the worktree is usable even without the exclude setup.
+        try {
+          await setupAoManagedExclude(worktreePath);
+        } catch {
+          // Non-fatal: exclude setup failure doesn't prevent workspace use
+        }
 
-      // Lock the worktree so that `git worktree prune` cannot silently delete
-      // it while the AO session is active. Non-fatal: older git versions may
-      // not support the lock subcommand.
-      try {
-        await git(repoPath, "worktree", "lock", "--reason", "AO session active", worktreePath);
-      } catch {
-        // Best-effort — prune protection unavailable on this git version
-      }
+        // Lock the worktree so that `git worktree prune` cannot silently delete
+        // it while the AO session is active. Non-fatal: older git versions may
+        // not support the lock subcommand.
+        try {
+          await git(
+            gitStoragePath,
+            "worktree",
+            "lock",
+            "--reason",
+            "AO session active",
+            worktreePath,
+          );
+        } catch {
+          // Best-effort — prune protection unavailable on this git version
+        }
 
-      return {
-        path: worktreePath,
-        branch: cfg.branch,
-        sessionId: cfg.sessionId,
-        projectId: cfg.projectId,
-        // Persist repoPath so destroy() can use it directly without re-discovering.
-        // This avoids the .git vs repo-root ambiguity when gitdir resolution fails.
-        repoPath,
-      };
+        const now = new Date().toISOString();
+        const leaseId = cfg.sessionId;
+        writeWorkspaceLease(roots.stateRoot, {
+          version: 1,
+          leaseId,
+          projectId: cfg.projectId,
+          repo: cfg.project.repo,
+          repoSlug: repoSlug(cfg.project.repo),
+          sessionId: cfg.sessionId,
+          branch: cfg.branch,
+          workspacePath: worktreePath,
+          repoPath: gitStoragePath,
+          artifactsPath,
+          selectedGitStorage: gitStoragePath,
+          readOnlyGitFallback,
+          createdAt: existingLease?.createdAt ?? now,
+          updatedAt: now,
+        });
+
+        return {
+          path: worktreePath,
+          branch: cfg.branch,
+          sessionId: cfg.sessionId,
+          projectId: cfg.projectId,
+          // Persist repoPath so destroy() can use it directly without re-discovering.
+          // This avoids the .git vs repo-root ambiguity when gitdir resolution fails.
+          repoPath: gitStoragePath,
+          leaseId,
+          readOnlyGitFallback,
+        };
+      });
     },
 
     async destroy(workspacePath: string, repoPathFromCaller?: string): Promise<void> {
@@ -647,7 +841,10 @@ export function create(config?: Record<string, unknown>): Workspace {
       // Only delete branches that match AO-managed branch patterns — this
       // excludes long-lived branches (main, master, develop) and any other
       // user-created branches that shouldn't be auto-deleted.
-      if (checkedOutBranch && /^(feat|fix|chore|docs|refactor|session)\//.test(checkedOutBranch)) {
+      if (
+        checkedOutBranch &&
+        /^(codex|feat|fix|chore|docs|refactor|session)\//.test(checkedOutBranch)
+      ) {
         if (repoPath) {
           try {
             await git(repoPath, "branch", "-D", checkedOutBranch);
@@ -660,7 +857,7 @@ export function create(config?: Record<string, unknown>): Workspace {
 
     async list(projectId: string): Promise<WorkspaceInfo[]> {
       assertSafePathSegment(projectId, "projectId");
-      const projectWorktreeDir = join(worktreeBaseDir, projectId);
+      const projectWorktreeDir = join(listWorktreeBaseDir, projectId);
       if (!existsSync(projectWorktreeDir)) return [];
 
       const entries = readdirSync(projectWorktreeDir, { withFileTypes: true });
@@ -730,71 +927,145 @@ export function create(config?: Record<string, unknown>): Workspace {
 
     async restore(cfg: WorkspaceCreateConfig, workspacePath: string): Promise<WorkspaceInfo> {
       const repoPath = expandPath(cfg.project.path);
-
-      // Unlock any stale locked entry for this path before pruning.
-      // This recovers worktrees whose directories were deleted externally
-      // while git still holds a lock entry (e.g. dead session cleanup).
-      try {
-        await git(repoPath, "worktree", "unlock", workspacePath);
-      } catch {
-        // Best-effort — entry may not exist or may already be unlocked
-      }
-
-      // Prune stale worktree entries
-      try {
-        await git(repoPath, "worktree", "prune");
-      } catch {
-        // Best effort
-      }
-
-      // Fetch latest
-      try {
-        await git(repoPath, "fetch", "origin", "--quiet");
-      } catch {
-        // May fail if offline
-      }
-
-      // Try to create worktree on the existing branch
-      try {
-        await git(repoPath, "worktree", "add", workspacePath, cfg.branch);
-      } catch {
-        // Branch might not exist locally — try from origin
-        const remoteBranch = `origin/${cfg.branch}`;
-        // bd-1483: Disambiguate before git worktree add (same shadowing risk as create())
-        await disambiguateBaseRef(repoPath, remoteBranch);
-        try {
-          await git(repoPath, "worktree", "add", "-b", cfg.branch, workspacePath, remoteBranch);
-        } catch {
-          // Last resort: create from default branch
-          const baseRef = `origin/${cfg.project.defaultBranch}`;
-          await disambiguateBaseRef(repoPath, baseRef);
-          await git(repoPath, "worktree", "add", "-b", cfg.branch, workspacePath, baseRef);
-        }
-      }
-
-      // bd-uxs.7: Set up .git/info/exclude to ignore AO-managed files
-      // This prevents worktree from showing as dirty due to runtime files.
-      // Wrap in try/catch so a failure here doesn't fail the restore —
-      // the worktree is usable even without the exclude setup.
-      try {
-        await setupAoManagedExclude(workspacePath);
-      } catch {
-        // Non-fatal: exclude setup failure doesn't prevent workspace use
-      }
-
-      // Lock the restored worktree to prevent accidental prune.
-      try {
-        await git(repoPath, "worktree", "lock", "--reason", "AO session active", workspacePath);
-      } catch {
-        // Best-effort — prune protection unavailable on this git version
-      }
-
-      return {
-        path: workspacePath,
-        branch: cfg.branch,
-        sessionId: cfg.sessionId,
+      const roots = resolveAgentWorkspaceRoots({
+        configPath: cfg.project.configPath,
         projectId: cfg.projectId,
-      };
+        project: cfg.project,
+        config: allocatorConfig,
+      });
+      const artifactsPath = join(roots.artifactsRoot, cfg.sessionId);
+      mkdirSync(artifactsPath, { recursive: true });
+
+      return await withWorkspaceLock(roots.stateRoot, cfg.project.repo, async () => {
+        const { gitStoragePath, readOnlyGitFallback } = await selectGitStorage(
+          repoPath,
+          roots.stateRoot,
+          cfg.project.repo,
+        );
+
+        // Unlock any stale locked entry for this path before pruning.
+        // This recovers worktrees whose directories were deleted externally
+        // while git still holds a lock entry (e.g. dead session cleanup).
+        try {
+          await git(gitStoragePath, "worktree", "unlock", workspacePath);
+        } catch {
+          // Best-effort — entry may not exist or may already be unlocked
+        }
+
+        // Prune stale worktree entries
+        try {
+          await git(gitStoragePath, "worktree", "prune");
+        } catch {
+          // Best effort
+        }
+
+        // Fetch latest
+        try {
+          await git(gitStoragePath, "fetch", "origin", "--quiet");
+        } catch {
+          // May fail if offline
+        }
+
+        // Try to create worktree on the existing branch
+        try {
+          await git(gitStoragePath, "worktree", "add", workspacePath, cfg.branch);
+        } catch {
+          if (!readOnlyGitFallback) {
+            // Branch might not exist locally — try from origin
+            const remoteBranch = `origin/${cfg.branch}`;
+            // bd-1483: Disambiguate before git worktree add (same shadowing risk as create())
+            await disambiguateBaseRef(gitStoragePath, remoteBranch);
+            try {
+              await git(
+                gitStoragePath,
+                "worktree",
+                "add",
+                "-b",
+                cfg.branch,
+                workspacePath,
+                remoteBranch,
+              );
+            } catch {
+              // Last resort: create from default branch
+              const baseRef = `origin/${cfg.project.defaultBranch}`;
+              await disambiguateBaseRef(gitStoragePath, baseRef);
+              await git(
+                gitStoragePath,
+                "worktree",
+                "add",
+                "-b",
+                cfg.branch,
+                workspacePath,
+                baseRef,
+              );
+            }
+          } else {
+            // Writable mirrors store branch refs locally rather than under origin/*.
+            await git(
+              gitStoragePath,
+              "worktree",
+              "add",
+              "-b",
+              cfg.branch,
+              workspacePath,
+              cfg.project.defaultBranch,
+            );
+          }
+        }
+
+        // bd-uxs.7: Set up .git/info/exclude to ignore AO-managed files
+        // This prevents worktree from showing as dirty due to runtime files.
+        // Wrap in try/catch so a failure here doesn't fail the restore —
+        // the worktree is usable even without the exclude setup.
+        try {
+          await setupAoManagedExclude(workspacePath);
+        } catch {
+          // Non-fatal: exclude setup failure doesn't prevent workspace use
+        }
+
+        // Lock the restored worktree to prevent accidental prune.
+        try {
+          await git(
+            gitStoragePath,
+            "worktree",
+            "lock",
+            "--reason",
+            "AO session active",
+            workspacePath,
+          );
+        } catch {
+          // Best-effort — prune protection unavailable on this git version
+        }
+
+        const now = new Date().toISOString();
+        const existingLease = readWorkspaceLease(roots.stateRoot, cfg.sessionId);
+        writeWorkspaceLease(roots.stateRoot, {
+          version: 1,
+          leaseId: cfg.sessionId,
+          projectId: cfg.projectId,
+          repo: cfg.project.repo,
+          repoSlug: repoSlug(cfg.project.repo),
+          sessionId: cfg.sessionId,
+          branch: cfg.branch,
+          workspacePath,
+          repoPath: gitStoragePath,
+          artifactsPath,
+          selectedGitStorage: gitStoragePath,
+          readOnlyGitFallback,
+          createdAt: existingLease?.createdAt ?? now,
+          updatedAt: now,
+        });
+
+        return {
+          path: workspacePath,
+          branch: cfg.branch,
+          sessionId: cfg.sessionId,
+          projectId: cfg.projectId,
+          repoPath: gitStoragePath,
+          leaseId: cfg.sessionId,
+          readOnlyGitFallback,
+        };
+      });
     },
 
     async postCreate(info: WorkspaceInfo, project: ProjectConfig): Promise<void> {
