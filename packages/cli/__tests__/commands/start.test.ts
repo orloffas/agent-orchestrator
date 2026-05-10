@@ -800,10 +800,11 @@ describe("start command — browser open waits for port", () => {
   it("calls waitForPortAndOpen with orchestrator URL and AbortSignal", async () => {
     mockConfigRef.current = makeConfig({ "my-app": makeProject() });
 
-    // Mock findWebDir to return tmpDir and create package.json for existsSync
+    // Mock findWebDir to return a source-style web dir so auto mode stays on dev.
     const { findWebDir } = await import("../../src/lib/web-dir.js");
     vi.mocked(findWebDir).mockReturnValue(tmpDir);
     writeFileSync(join(tmpDir, "package.json"), "{}");
+    mkdirSync(join(tmpDir, "server"), { recursive: true });
 
     mockSessionManager.get.mockResolvedValue(null);
     mockSessionManager.spawnOrchestrator.mockResolvedValue({ id: "app-orchestrator" });

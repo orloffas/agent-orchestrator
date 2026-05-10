@@ -56,6 +56,11 @@ import { isHumanCaller } from "../lib/caller-context.js";
 import { detectEnvironment } from "../lib/detect-env.js";
 import { detectDefaultBranch } from "../lib/git-utils.js";
 import {
+  inspectStartDashboardRuntime,
+  resolveStartDashboardLaunchPlan,
+  type StartDashboardLaunchPlan,
+} from "../lib/start-dashboard-mode.js";
+import {
   detectProjectType,
   generateRulesFromTemplates,
   formatProjectTypeForDisplay,
@@ -571,33 +576,17 @@ async function startDashboard(
   port: number,
   webDir: string,
   configPath: string | null,
+  launchPlan: StartDashboardLaunchPlan,
   terminalPort?: number,
   directTerminalPort?: number,
 ): Promise<ChildProcess> {
   const env = await buildDashboardEnv(port, configPath, terminalPort, directTerminalPort);
-
-  // Detect dev vs production: the `server/` source directory only exists in the
-  // monorepo. Published npm packages only have `dist-server/`.
-  const isDevMode = existsSync(resolve(webDir, "server"));
-
-  let child: ChildProcess;
-  if (isDevMode) {
-    // Monorepo development: use pnpm run dev (tsx, HMR, etc.)
-    child = spawn("pnpm", ["run", "dev"], {
-      cwd: webDir,
-      stdio: "inherit",
-      detached: false,
-      env,
-    });
-  } else {
-    // Production (installed from npm): use pre-built start-all script
-    child = spawn("node", [resolve(webDir, "dist-server", "start-all.js")], {
-      cwd: webDir,
-      stdio: "inherit",
-      detached: false,
-      env,
-    });
-  }
+  const child = spawn(launchPlan.command, launchPlan.args, {
+    cwd: webDir,
+    stdio: "inherit",
+    detached: false,
+    env,
+  });
 
   child.on("error", (err) => {
     console.error(chalk.red("Dashboard failed to start:"), err.message);
@@ -706,17 +695,29 @@ async function runStartup(
       port = newPort;
     }
     const webDir = findWebDir(); // throws with install-specific guidance if not found
-    await preflight.checkBuilt(webDir);
+    const dashboardRuntime = inspectStartDashboardRuntime(webDir);
 
     if (opts?.rebuild) {
-      await cleanNextCache(webDir);
+      if (dashboardRuntime.launchMode === "development") {
+        await cleanNextCache(webDir);
+      } else if (dashboardRuntime.sourceRepoRoot) {
+        await exec("pnpm", ["build"], { cwd: dashboardRuntime.sourceRepoRoot });
+      } else {
+        throw new Error(
+          "AO_START_DASHBOARD_MODE=production does not support --rebuild for installed packages. Rebuild or reinstall @jleechanorg/ao-web first.",
+        );
+      }
     }
+
+    await preflight.checkBuilt(webDir);
+    const dashboardPlan = resolveStartDashboardLaunchPlan(webDir);
 
     spinner.start("Starting dashboard");
     dashboardProcess = await startDashboard(
       port,
       webDir,
       config.configPath,
+      dashboardPlan,
       config.terminalPort,
       config.directTerminalPort,
     );
