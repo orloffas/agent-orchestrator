@@ -1,7 +1,7 @@
 import { type NextRequest } from "next/server";
 import { validateIdentifier } from "@/lib/validation";
 import { getServices } from "@/lib/services";
-import { sessionToDashboard } from "@/lib/serialize";
+import { enrichSessionsMetadata, sessionToDashboard } from "@/lib/serialize";
 import {
   SessionNotRestorableError,
   WorkspaceMissingError,
@@ -25,9 +25,13 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   }
 
   try {
-    const { config, sessionManager } = await getServices();
+    const { config, registry, sessionManager } = await getServices();
     const projectId = resolveProjectIdForSessionId(config, id);
     const restored = await sessionManager.restore(id);
+    const dashboardSession = sessionToDashboard(restored);
+    await enrichSessionsMetadata([restored], [dashboardSession], config, registry).catch(
+      () => undefined,
+    );
 
     recordApiObservation({
       config,
@@ -45,7 +49,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       {
         ok: true,
         sessionId: id,
-        session: sessionToDashboard(restored),
+        session: dashboardSession,
       },
       { status: 200 },
       correlationId,

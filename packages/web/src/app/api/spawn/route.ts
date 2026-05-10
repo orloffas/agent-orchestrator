@@ -1,7 +1,7 @@
 import { type NextRequest } from "next/server";
 import { validateIdentifier } from "@/lib/validation";
 import { getServices } from "@/lib/services";
-import { sessionToDashboard } from "@/lib/serialize";
+import { enrichSessionsMetadata, sessionToDashboard } from "@/lib/serialize";
 import { getCorrelationId, jsonWithCorrelation, recordApiObservation } from "@/lib/observability";
 
 /** POST /api/spawn — Spawn a new session */
@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { config, sessionManager } = await getServices();
+    const { config, registry, sessionManager } = await getServices();
 
     // Validate and sanitize prompt: must be string (not object/array/number), stripped of newlines, capped at 4096 chars
     if (body.prompt !== undefined && typeof body.prompt !== "string") {
@@ -65,11 +65,10 @@ export async function POST(request: NextRequest) {
       data: { issueId: session.issueId },
     });
 
-    return jsonWithCorrelation(
-      { session: sessionToDashboard(session) },
-      { status: 201 },
-      correlationId,
-    );
+    const dashboardSession = sessionToDashboard(session);
+    await enrichSessionsMetadata([session], [dashboardSession], config, registry).catch(() => undefined);
+
+    return jsonWithCorrelation({ session: dashboardSession }, { status: 201 }, correlationId);
   } catch (err) {
     const { config } = await getServices().catch(() => ({ config: undefined }));
     if (config) {
