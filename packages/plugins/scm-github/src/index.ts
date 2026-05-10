@@ -271,6 +271,13 @@ function synthesizePrViewJsonFromRest(
     out.isDraft = Boolean(rest.draft);
   }
 
+  // REST API returns `url` as the API URL (e.g. https://api.github.com/repos/…/pulls/…)
+  // and `html_url` as the browser URL (e.g. https://github.com/…/pull/…).
+  // Always map from html_url so dashboard links are correct.
+  if (want.has("url")) {
+    out.url = rest.html_url;
+  }
+
   if (want.has("mergeStateStatus")) {
     const rawMs = typeof rest.mergeable_state === "string" ? rest.mergeable_state : "";
     out.mergeStateStatus = restMergeableStateToGraphqlMergeStateStatus(rawMs);
@@ -1581,7 +1588,7 @@ function createGitHubSCM(config?: Record<string, unknown>): SCM {
 
       const data: {
         number: number;
-        url: string;
+        html_url: string;
         title: string;
         head: { ref: string };
         base: { ref: string };
@@ -1592,7 +1599,7 @@ function createGitHubSCM(config?: Record<string, unknown>): SCM {
       return prInfoFromView(
         {
           number: data.number,
-          url: data.url,
+          url: data.html_url,
           title: data.title,
           headRefName: data.head.ref,
           baseRefName: data.base.ref,
