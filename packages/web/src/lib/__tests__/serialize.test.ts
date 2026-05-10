@@ -230,6 +230,24 @@ describe("sessionToDashboard", () => {
 
     expect(dashboard.pr).toBeNull();
   });
+
+  it("should keep tracker identifiers separate from issue URLs", () => {
+    const coreSession = createCoreSession({ issueId: "42" });
+    const dashboard = sessionToDashboard(coreSession);
+
+    expect(dashboard.issueId).toBe("42");
+    expect(dashboard.issueUrl).toBeNull();
+  });
+
+  it("should preserve legacy sessions that already store a full issue URL", () => {
+    const coreSession = createCoreSession({
+      issueId: "https://github.com/test/repo/issues/42",
+    });
+    const dashboard = sessionToDashboard(coreSession);
+
+    expect(dashboard.issueId).toBe("https://github.com/test/repo/issues/42");
+    expect(dashboard.issueUrl).toBe("https://github.com/test/repo/issues/42");
+  });
 });
 
 describe("resolveProject", () => {
@@ -811,12 +829,14 @@ describe("enrichSessionsMetadata", () => {
     const agent = mockAgent("Implementing auth fix");
     const registry = mockRegistry(tracker, agent);
 
-    const core = createCoreSession({ issueId: `${urlBase}-full` });
+    const core = createCoreSession({ issueId: "42" });
     const dashboard = sessionToDashboard(core);
     expect(dashboard.summary).toBeNull();
+    expect(dashboard.issueUrl).toBeNull();
 
     await enrichSessionsMetadata([core], [dashboard], testConfig, registry);
 
+    expect(dashboard.issueUrl).toBe(`${urlBase}-default`);
     // Issue label enriched (sync)
     expect(dashboard.issueLabel).toBe("#42");
     // Summary enriched (async)
@@ -861,11 +881,12 @@ describe("enrichSessionsMetadata", () => {
     const agent = mockAgent();
     const registry = mockRegistry(null, agent);
 
-    const core = createCoreSession({ issueId: `${urlBase}-no-tracker` });
+    const core = createCoreSession({ issueId: "42" });
     const dashboard = sessionToDashboard(core);
 
     await enrichSessionsMetadata([core], [dashboard], testConfig, registry);
 
+    expect(dashboard.issueUrl).toBeNull();
     // Issue enrichment skipped (no tracker)
     expect(dashboard.issueLabel).toBeNull();
     expect(dashboard.issueTitle).toBeNull();
@@ -877,11 +898,12 @@ describe("enrichSessionsMetadata", () => {
     const tracker = mockTracker();
     const registry = mockRegistry(tracker, null);
 
-    const core = createCoreSession({ issueId: `${urlBase}-no-agent` });
+    const core = createCoreSession({ issueId: "42" });
     const dashboard = sessionToDashboard(core);
 
     await enrichSessionsMetadata([core], [dashboard], testConfig, registry);
 
+    expect(dashboard.issueUrl).toBe(`${urlBase}-default`);
     // Issue enrichment still works
     expect(dashboard.issueLabel).toBe("#42");
     // Summary stays null (no agent)
@@ -898,11 +920,12 @@ describe("enrichSessionsMetadata", () => {
       },
     } as OrchestratorConfig;
 
-    const core = createCoreSession({ issueId: `${urlBase}-no-tracker-cfg` });
+    const core = createCoreSession({ issueId: "42" });
     const dashboard = sessionToDashboard(core);
 
     await enrichSessionsMetadata([core], [dashboard], configNoTracker, registry);
 
+    expect(dashboard.issueUrl).toBeNull();
     // No tracker resolution attempted
     expect(registry.get).not.toHaveBeenCalledWith("tracker", expect.anything());
     expect(dashboard.issueLabel).toBeNull();
@@ -916,11 +939,11 @@ describe("enrichSessionsMetadata", () => {
     const registry = mockRegistry(tracker, agent);
 
     const cores = [
-      createCoreSession({ id: "test-1", issueId: `${urlBase}-multi-1` }),
+      createCoreSession({ id: "test-1", issueId: "42" }),
       createCoreSession({ id: "test-2", issueId: null }), // no issue
       createCoreSession({
         id: "test-3",
-        issueId: `${urlBase}-multi-3`,
+        issueId: "42",
         agentInfo: { summary: "Already has one", summaryIsFallback: false, agentSessionId: "y" },
       }),
     ];
@@ -929,6 +952,7 @@ describe("enrichSessionsMetadata", () => {
     await enrichSessionsMetadata(cores, dashboards, testConfig, registry);
 
     // Session 1: full enrichment
+    expect(dashboards[0].issueUrl).toBe(`${urlBase}-default`);
     expect(dashboards[0].issueLabel).toBe("#42");
     expect(dashboards[0].summary).toBe("Working on feature");
 
@@ -937,6 +961,7 @@ describe("enrichSessionsMetadata", () => {
     expect(dashboards[1].summary).toBe("Working on feature");
 
     // Session 3: issue enriched, summary kept from agentInfo
+    expect(dashboards[2].issueUrl).toBe(`${urlBase}-default`);
     expect(dashboards[2].issueLabel).toBe("#42");
     expect(dashboards[2].summary).toBe("Already has one");
     // Agent not called for session 3 (already had summary)
