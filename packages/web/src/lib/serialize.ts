@@ -31,6 +31,19 @@ function isAbsoluteIssueUrl(value: string | null | undefined): value is string {
   return typeof value === "string" && /^https?:\/\//.test(value);
 }
 
+/**
+ * Normalize a PR URL that may be an API URL (https://api.github.com/repos/…/pulls/…)
+ * or a web URL (https://github.com/…/pull/…). Always returns the web URL form.
+ */
+const API_PR_URL_RE = /^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)/;
+function normalizePrUrl(url: string): string {
+  const match = url.match(API_PR_URL_RE);
+  if (match) {
+    return `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}`;
+  }
+  return url;
+}
+
 /** Resolve which project a session belongs to. */
 export function resolveProject(
   core: Session,
@@ -100,7 +113,7 @@ export function listDashboardOrchestrators(
 function basicPRToDashboard(pr: PRInfo): DashboardPR {
   return {
     number: pr.number,
-    url: pr.url,
+    url: normalizePrUrl(pr.url),
     title: pr.title,
     owner: pr.owner,
     repo: pr.repo,
