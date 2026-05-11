@@ -164,10 +164,11 @@ async function fetchOpenCodeSessionList(
     }
   }
 
-  const promise = fetchOpenCodeSessionListImpl(timeoutMs);
+  const innerPromise = fetchOpenCodeSessionListImpl(timeoutMs);
+  const promise = innerPromise.catch(() => []);
   openCodeSessionListCache = { promise, settledAt: 0 };
 
-  void promise.then(
+  void innerPromise.then(
     () => {
       openCodeSessionListCache = { promise, settledAt: Date.now() };
     },
@@ -182,33 +183,29 @@ async function fetchOpenCodeSessionList(
 async function fetchOpenCodeSessionListImpl(
   timeoutMs: number,
 ): Promise<OpenCodeSessionListEntry[]> {
-  try {
-    const { stdout } = await _execFileAsync("opencode", ["session", "list", "--format", "json"], {
-      timeout: timeoutMs,
-    });
-    const parsed = safeJsonParse<unknown>(stdout);
-    if (!Array.isArray(parsed)) return [];
+  const { stdout } = await _execFileAsync("opencode", ["session", "list", "--format", "json"], {
+    timeout: timeoutMs,
+  });
+  const parsed = safeJsonParse<unknown>(stdout);
+  if (!Array.isArray(parsed)) return [];
 
-    return parsed.flatMap((entry) => {
-      if (!entry || typeof entry !== "object") return [];
-      const title = typeof entry["title"] === "string" ? entry["title"] : "";
-      const id = asValidOpenCodeSessionId(entry["id"]);
-      if (!id) return [];
-      const rawUpdated = entry["updated"];
-      let updatedAt: number | undefined;
-      if (typeof rawUpdated === "number" && Number.isFinite(rawUpdated)) {
-        updatedAt = rawUpdated;
-      } else if (typeof rawUpdated === "string") {
-        const parsedUpdated = Date.parse(rawUpdated);
-        if (!Number.isNaN(parsedUpdated)) {
-          updatedAt = parsedUpdated;
-        }
+  return parsed.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const title = typeof entry["title"] === "string" ? entry["title"] : "";
+    const id = asValidOpenCodeSessionId(entry["id"]);
+    if (!id) return [];
+    const rawUpdated = entry["updated"];
+    let updatedAt: number | undefined;
+    if (typeof rawUpdated === "number" && Number.isFinite(rawUpdated)) {
+      updatedAt = rawUpdated;
+    } else if (typeof rawUpdated === "string") {
+      const parsedUpdated = Date.parse(rawUpdated);
+      if (!Number.isNaN(parsedUpdated)) {
+        updatedAt = parsedUpdated;
       }
-      return [{ id, title, ...(updatedAt !== undefined ? { updatedAt } : {}) }];
-    });
-  } catch {
-    return [];
-  }
+    }
+    return [{ id, title, ...(updatedAt !== undefined ? { updatedAt } : {}) }];
+  });
 }
 
 async function discoverOpenCodeSessionIdsByTitle(
