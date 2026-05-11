@@ -111,6 +111,7 @@ const MIN_OPENCODE_LIST_INTERVAL_MS = 2_000;
 interface OpenCodeSessionListCacheEntry {
   promise: Promise<OpenCodeSessionListEntry[]>;
   settledAt: number;
+  timeoutMs: number;
 }
 let openCodeSessionListCache: OpenCodeSessionListCacheEntry | null = null;
 
@@ -156,21 +157,24 @@ async function fetchOpenCodeSessionList(
 ): Promise<OpenCodeSessionListEntry[]> {
   const now = Date.now();
   if (openCodeSessionListCache) {
-    if (
-      openCodeSessionListCache.settledAt === 0 ||
-      now - openCodeSessionListCache.settledAt < MIN_OPENCODE_LIST_INTERVAL_MS
-    ) {
-      return openCodeSessionListCache.promise;
+    if (openCodeSessionListCache.settledAt === 0) {
+      if (timeoutMs <= openCodeSessionListCache.timeoutMs) {
+        return openCodeSessionListCache.promise;
+      }
+    } else if (now - openCodeSessionListCache.settledAt < MIN_OPENCODE_LIST_INTERVAL_MS) {
+      if (timeoutMs <= openCodeSessionListCache.timeoutMs) {
+        return openCodeSessionListCache.promise;
+      }
     }
   }
 
   const innerPromise = fetchOpenCodeSessionListImpl(timeoutMs);
   const promise = innerPromise.catch(() => []);
-  openCodeSessionListCache = { promise, settledAt: 0 };
+  openCodeSessionListCache = { promise, settledAt: 0, timeoutMs };
 
   void innerPromise.then(
     () => {
-      openCodeSessionListCache = { promise, settledAt: Date.now() };
+      openCodeSessionListCache = { promise, settledAt: Date.now(), timeoutMs };
     },
     () => {
       openCodeSessionListCache = null;
