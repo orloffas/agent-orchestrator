@@ -106,6 +106,15 @@ const _execFileAsync = promisify(execFile);
 const OPENCODE_DISCOVERY_TIMEOUT_MS = 2_000;
 const OPENCODE_INTERACTIVE_DISCOVERY_TIMEOUT_MS = 10_000;
 
+const MIN_OPENCODE_LIST_INTERVAL_MS = 2_000;
+
+interface OpenCodeSessionListCacheEntry {
+  promise: Promise<OpenCodeSessionListEntry[]>;
+  settledAt: number;
+  timeoutMs: number;
+}
+let openCodeSessionListCache: OpenCodeSessionListCacheEntry | null = null;
+
 function errorIncludesSessionNotFound(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const e = err as Error & { stderr?: string; stdout?: string };
@@ -146,33 +155,61 @@ interface OpenCodeSessionListEntry {
 async function fetchOpenCodeSessionList(
   timeoutMs = OPENCODE_DISCOVERY_TIMEOUT_MS,
 ): Promise<OpenCodeSessionListEntry[]> {
-  try {
-    const { stdout } = await _execFileAsync("opencode", ["session", "list", "--format", "json"], {
-      timeout: timeoutMs,
-    });
-    const parsed = safeJsonParse<unknown>(stdout);
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed.flatMap((entry) => {
-      if (!entry || typeof entry !== "object") return [];
-      const title = typeof entry["title"] === "string" ? entry["title"] : "";
-      const id = asValidOpenCodeSessionId(entry["id"]);
-      if (!id) return [];
-      const rawUpdated = entry["updated"];
-      let updatedAt: number | undefined;
-      if (typeof rawUpdated === "number" && Number.isFinite(rawUpdated)) {
-        updatedAt = rawUpdated;
-      } else if (typeof rawUpdated === "string") {
-        const parsedUpdated = Date.parse(rawUpdated);
-        if (!Number.isNaN(parsedUpdated)) {
-          updatedAt = parsedUpdated;
-        }
+  const now = Date.now();
+  if (openCodeSessionListCache) {
+    if (openCodeSessionListCache.settledAt === 0) {
+      if (timeoutMs <= openCodeSessionListCache.timeoutMs) {
+        return openCodeSessionListCache.promise;
       }
-      return [{ id, title, ...(updatedAt !== undefined ? { updatedAt } : {}) }];
-    });
-  } catch {
-    return [];
+    } else if (now - openCodeSessionListCache.settledAt < MIN_OPENCODE_LIST_INTERVAL_MS) {
+      if (timeoutMs <= openCodeSessionListCache.timeoutMs) {
+        return openCodeSessionListCache.promise;
+      }
+    }
   }
+
+  const innerPromise = fetchOpenCodeSessionListImpl(timeoutMs);
+  const promise = innerPromise.catch(() => []);
+  openCodeSessionListCache = { promise, settledAt: 0, timeoutMs };
+
+  void innerPromise.then(
+    () => {
+      openCodeSessionListCache = { promise, settledAt: Date.now(), timeoutMs };
+    },
+    () => {
+      openCodeSessionListCache = null;
+    },
+  );
+
+  return promise;
+}
+
+async function fetchOpenCodeSessionListImpl(
+  timeoutMs: number,
+): Promise<OpenCodeSessionListEntry[]> {
+  const { stdout } = await _execFileAsync("opencode", ["session", "list", "--format", "json"], {
+    timeout: timeoutMs,
+  });
+  const parsed = safeJsonParse<unknown>(stdout);
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const title = typeof entry["title"] === "string" ? entry["title"] : "";
+    const id = asValidOpenCodeSessionId(entry["id"]);
+    if (!id) return [];
+    const rawUpdated = entry["updated"];
+    let updatedAt: number | undefined;
+    if (typeof rawUpdated === "number" && Number.isFinite(rawUpdated)) {
+      updatedAt = rawUpdated;
+    } else if (typeof rawUpdated === "string") {
+      const parsedUpdated = Date.parse(rawUpdated);
+      if (!Number.isNaN(parsedUpdated)) {
+        updatedAt = parsedUpdated;
+      }
+    }
+    return [{ id, title, ...(updatedAt !== undefined ? { updatedAt } : {}) }];
+  });
 }
 
 async function discoverOpenCodeSessionIdsByTitle(
