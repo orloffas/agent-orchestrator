@@ -42,6 +42,52 @@ async function ghExec(args: string[]): Promise<string> {
 // Rate Limit Handling — uses shared utilities from ao-core
 // ---------------------------------------------------------------------------
 
+interface RateLimitCache {
+  core: {
+    remaining: number;
+    reset: number;
+  };
+  timestamp: number;
+}
+
+let rateLimitCache: RateLimitCache | null = null;
+const RATE_LIMIT_CACHE_TTL_MS = 60_000;
+
+function parseRetryAfterSeconds(err: unknown): number | null {
+  const text = err instanceof Error ? err.message : String(err);
+  const match = text.match(/retry[ -]after[:\s]*(\d+)/i);
+  if (match && match[1]) {
+    const seconds = parseInt(match[1], 10);
+    if (seconds > 0 && seconds <= 3600) return seconds;
+  }
+  return null;
+}
+
+async function refreshRateLimitCache(): Promise<void> {
+  const now = Date.now();
+  if (rateLimitCache && now - rateLimitCache.timestamp < RATE_LIMIT_CACHE_TTL_MS) return;
+
+  try {
+    const raw = await ghExec(["api", "rate_limit"]);
+    const data = JSON.parse(raw) as { resources?: { core?: { remaining: number; reset: number } } };
+    const core = data.resources?.core;
+    if (core && typeof core.remaining === "number" && typeof core.reset === "number") {
+      rateLimitCache = { core, timestamp: now };
+    }
+  } catch {
+    // Cannot fetch rate limit — proceed without cache
+  }
+}
+
+function rateLimitResetSleepMs(): number | null {
+  if (!rateLimitCache) return null;
+  const now = Date.now();
+  if (rateLimitCache.core.remaining > 0) return null;
+  const waitMs = Math.max(0, rateLimitCache.core.reset * 1000 - now);
+  if (waitMs <= 0 || waitMs > 900_000) return null;
+  return Math.min(waitMs, 60_000);
+}
+
 /**
  * Map REST issue JSON to the same shape as `gh issue view --json` / `gh issue list --json`.
  */
@@ -115,6 +161,11 @@ async function issueListRestFallback(
 
 /**
  * Execute gh CLI with rate limit retry and REST fallback.
+ *
+ * Rate limit handling follows GitHub official guidelines:
+ * - Detects retry-after seconds from error messages for secondary rate limits
+ * - Uses exponential backoff (1s, 2s, 4s) capped at 60s per wait
+ * - Falls back to REST API on retry exhaustion for read operations
  */
 async function gh(args: string[], maxRetries = 3): Promise<string> {
   let lastError: unknown;
@@ -126,8 +177,13 @@ async function gh(args: string[], maxRetries = 3): Promise<string> {
       lastError = err;
       if (isGhRateLimitError(err)) {
         if (attempt < maxRetries - 1) {
-          const backoffMs = Math.min(1000 * Math.pow(2, attempt), 30000);
-          console.warn(`[tracker-github] Rate limit detected, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+          const retryAfterS = parseRetryAfterSeconds(err);
+          const backoffMs = retryAfterS
+            ? Math.min(retryAfterS * 1000, 60_000)
+            : Math.min(1000 * Math.pow(2, attempt), 60_000);
+          console.warn(
+            `[tracker-github] Rate limit detected, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`,
+          );
           await ghSleep(backoffMs);
         }
       } else {
