@@ -227,18 +227,23 @@ function createOpenCodeAgent(): Agent {
           shellEscape(`AO:${config.sessionId}`),
           ...sharedOptions,
         ];
+        // Pass the prompt as a positional message so opencode processes it
+        // on session creation, rather than waiting for --prompt on --session
+        // connect (which is ignored for --session mode).
+        if (promptValue) {
+          runOptions.push(promptValue);
+        }
         const captureScript = buildSessionIdCaptureScript();
         const fallbackScript = buildSessionLookupScript();
         const runCommand = ["opencode", "run", ...runOptions, "--command", "true"].join(" ");
-        const resumeOptions = [...(promptValue ? ["--prompt", promptValue] : []), ...sharedOptions];
-        const resumeOptionsSuffix = resumeOptions.length > 0 ? ` ${resumeOptions.join(" ")}` : "";
+        const connectOptions = [...sharedOptions].join(" ");
         const missingSessionError = shellEscape(
           `failed to discover OpenCode session ID for AO:${config.sessionId}`,
         );
         return [
           `SES_ID=$(${runCommand} | node -e ${shellEscape(captureScript)})`,
           `if [ -z "$SES_ID" ]; then SES_ID=$(opencode session list --format json | node -e ${shellEscape(fallbackScript)} ${shellEscape(`AO:${config.sessionId}`)}); fi`,
-          `[ -n "$SES_ID" ] && exec opencode --session "$SES_ID"${resumeOptionsSuffix}; echo ${missingSessionError} >&2; exit 1`,
+          `[ -n "$SES_ID" ] && exec opencode --session "$SES_ID" ${connectOptions}; echo ${missingSessionError} >&2; exit 1`,
         ].join("; ");
       }
 
