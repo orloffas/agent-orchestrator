@@ -19,6 +19,7 @@ import {
   getLeaves,
   getSiblings,
   formatPlanTree,
+  getSessionsDir,
   type OrchestratorConfig,
   type PluginRegistry,
   type OpenCodeSessionManager,
@@ -33,6 +34,8 @@ import {
   isOrchestratorSession,
   TERMINAL_STATUSES,
 } from "@jleechanorg/ao-core";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 // Static plugin imports — webpack needs these to be string literals
 import pluginRuntimeTmux from "@jleechanorg/ao-plugin-runtime-tmux";
@@ -109,6 +112,7 @@ async function initServices(): Promise<Services> {
 const BACKLOG_LABEL = "agent:backlog";
 const BACKLOG_POLL_INTERVAL = 60_000; // 1 minute
 const MAX_CONCURRENT_AGENTS = 5; // Max active agent sessions across all projects
+const MAX_FAILED_ATTEMPTS = 3; // Block issue after this many killed sessions
 
 const globalForBacklog = globalThis as typeof globalThis & {
   _aoBacklogStarted?: boolean;
@@ -178,7 +182,7 @@ async function labelIssuesForVerification(
         session.issueId!,
         {
           labels: ["merged-unverified"],
-          removeLabels: ["agent:backlog", "agent:in-progress"],
+          removeLabels: ["agent:backlog", "agent:in-progress", "agent:blocked"],
           comment: `PR merged. Issue awaiting human verification on staging.`,
         },
         project,
@@ -232,6 +236,77 @@ async function relabelReopenedIssues(
   }
 }
 
+/** Count killed sessions per issueId by scanning the session archive on disk.
+ *  Only sessions modified within the last `windowMs` milliseconds are counted. */
+function countKilledSessions(
+  config: OrchestratorConfig,
+  windowMs: number,
+): Map<string, number> {
+  const killedCounts = new Map<string, number>();
+  const cutoff = Date.now() - windowMs;
+
+  for (const [projectId, project] of Object.entries(config.projects)) {
+    if (!project.path) continue;
+    let sessionsDir: string;
+    try {
+      sessionsDir = getSessionsDir(config.configPath ?? "", project.path);
+    } catch {
+      continue;
+    }
+
+    // Read active session files (status=killed may still be in sessions/)
+    // and archived session files (sessions/archive/)
+    for (const subdir of ["", "archive"]) {
+      const dir = subdir ? join(sessionsDir, subdir) : sessionsDir;
+      if (!existsSync(dir)) continue;
+
+      let entries: string[];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (entry.startsWith(".")) continue;
+        const entryPath = join(dir, entry);
+        let mtimeMs: number;
+        try {
+          const stat = statSync(entryPath);
+          if (stat.isDirectory()) continue;
+          mtimeMs = stat.mtimeMs;
+        } catch {
+          continue;
+        }
+        if (mtimeMs < cutoff) continue;
+
+        let raw: string;
+        try {
+          raw = readFileSync(entryPath, "utf-8");
+        } catch {
+          continue;
+        }
+
+        const fields = new Map<string, string>();
+        for (const line of raw.split("\n")) {
+          const eq = line.indexOf("=");
+          if (eq === -1) continue;
+          fields.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
+        }
+
+        const status = fields.get("status");
+        const issueId = fields.get("issue");
+        if (status === "killed" && issueId) {
+          const key = `${projectId}:${issueId.toLowerCase()}`;
+          killedCounts.set(key, (killedCounts.get(key) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
+  return killedCounts;
+}
+
 export async function pollBacklog(): Promise<void> {
   if (globalForBacklog._aoBacklogPolling) return;
   globalForBacklog._aoBacklogPolling = true;
@@ -253,6 +328,10 @@ export async function pollBacklog(): Promise<void> {
     const activeIssueIds = new Set(
       workerSessions.filter((s) => s.issueId).map((s) => s.issueId!.toLowerCase()),
     );
+
+    // Count killed sessions per issueId by scanning session archives on disk.
+    // sessionManager.list() excludes killed/merged sessions, so we scan raw files.
+    const killedCounts = countKilledSessions(config, 24 * 60 * 60 * 1000);
 
     // Auto-scaling: respect max concurrent agents
     let availableSlots = MAX_CONCURRENT_AGENTS - workerSessions.length;
@@ -280,6 +359,30 @@ export async function pollBacklog(): Promise<void> {
 
         // Skip if already being worked on
         if (activeIssueIds.has(issue.id.toLowerCase())) continue;
+
+        // Block issue if too many killed sessions — prevents death loop
+        const killedCount = killedCounts.get(`${projectId}:${issue.id.toLowerCase()}`) ?? 0;
+        if (killedCount >= MAX_FAILED_ATTEMPTS) {
+          console.log(
+            `[backlog] Blocking issue ${issue.id}: ${killedCount} killed sessions (threshold ${MAX_FAILED_ATTEMPTS})`,
+          );
+          if (tracker.updateIssue) {
+            try {
+              await tracker.updateIssue(
+                issue.id,
+                {
+                  labels: ["agent:blocked"],
+                  removeLabels: [BACKLOG_LABEL, "agent:in-progress"],
+                  comment: `Agent blocked after ${killedCount} killed sessions. Manual triage needed.`,
+                },
+                project,
+              );
+            } catch {
+              // Non-fatal — label update failure shouldn't block other issues
+            }
+          }
+          continue;
+        }
 
         try {
           const decompConfig = project.decomposer;
