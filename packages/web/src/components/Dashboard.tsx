@@ -18,6 +18,7 @@ import { DynamicFavicon } from "./DynamicFavicon";
 import { useSessionEvents } from "@/hooks/useSessionEvents";
 import { ProjectSidebar } from "./ProjectSidebar";
 import { DoneOnlyKanbanEmptyState } from "./DoneOnlyKanbanEmptyState";
+import { SettingsPanel } from "./SettingsPanel";
 import type { ProjectInfo } from "@/lib/project-name";
 
 interface DashboardProps {
@@ -421,6 +422,12 @@ export function Dashboard({
           </div>
         )}
       </div>
+      <SettingsPanel
+        projectId={projectId}
+        projectName={projectName}
+        stats={liveStats}
+        orchestrators={activeOrchestrators}
+      />
     </div>
   );
 }
