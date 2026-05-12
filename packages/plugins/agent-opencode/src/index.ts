@@ -240,12 +240,17 @@ function createOpenCodeAgent(): Agent {
           // Step 2 (fallback): if step 1 failed, search by title
           `if [ -z "$SES_ID" ]; then SES_ID=$(opencode session list --format json | node -e ${shellEscape(fallbackScript)} ${shellEscape(`AO:${config.sessionId}`)}); fi`,
         ];
-        // Step 3: inject the task prompt as a run message so the agent has
-        // the work description from the start (--command true consumes
-        // positional text as command arguments, so we can't pass it there).
+        // Step 3: inject the task prompt asynchronously as a run message.
+        // Running in background (&) avoids blocking the interactive attach
+        // (P1: opencode run is one-shot and would delay TUI readiness).
+        // Output is logged to a file instead of /dev/null so failures are
+        // diagnosable (P2: silent prompt-injection failure → idle worker).
         if (promptValue) {
+          const promptLogFile = shellEscape(
+            `/tmp/ao-prompt-${config.sessionId}.log`,
+          );
           lines.push(
-            `[ -n "$SES_ID" ] && opencode run --session "$SES_ID" ${promptValue} >/dev/null 2>&1`,
+            `[ -n "$SES_ID" ] && opencode run --session "$SES_ID" ${promptValue} >${promptLogFile} 2>&1 &`,
           );
         }
         // Step 4: attach interactively
