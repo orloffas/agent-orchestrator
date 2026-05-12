@@ -225,16 +225,34 @@ function createOpenCodeAgent(): Agent {
         const captureScript = buildSessionIdCaptureScript();
         const fallbackScript = buildSessionLookupScript();
         const runCommand = ["opencode", "run", ...runOptions, "--command", "true"].join(" ");
-        const resumeOptions = [...(promptValue ? ["--prompt", promptValue] : []), ...sharedOptions];
-        const resumeOptionsSuffix = resumeOptions.length > 0 ? ` ${resumeOptions.join(" ")}` : "";
+        const connectCommand = ["opencode", "--session", `"$SES_ID"`, ...sharedOptions].join(" ");
         const missingSessionError = shellEscape(
           `failed to discover OpenCode session ID for AO:${config.sessionId}`,
         );
-        return [
+        const lines = [
+          // Step 1: create session and capture its ID
           `SES_ID=$(${runCommand} | node -e ${shellEscape(captureScript)})`,
+          // Step 2 (fallback): if step 1 failed, search by title
           `if [ -z "$SES_ID" ]; then SES_ID=$(opencode session list --format json | node -e ${shellEscape(fallbackScript)} ${shellEscape(`AO:${config.sessionId}`)}); fi`,
-          `[ -n "$SES_ID" ] && exec opencode --session "$SES_ID"${resumeOptionsSuffix}; echo ${missingSessionError} >&2; exit 1`,
-        ].join("; ");
+        ];
+        // Step 3: inject the task prompt asynchronously as a run message.
+        // Running in background (&) avoids blocking the interactive attach
+        // (P1: opencode run is one-shot and would delay TUI readiness).
+        // Output is logged to a file instead of /dev/null so failures are
+        // diagnosable (P2: silent prompt-injection failure → idle worker).
+        if (promptValue) {
+          const promptLogFile = shellEscape(
+            `/tmp/ao-prompt-${config.sessionId}.log`,
+          );
+          lines.push(
+            `[ -n "$SES_ID" ] && opencode run --session "$SES_ID" ${promptValue} >${promptLogFile} 2>&1 &`,
+          );
+        }
+        // Step 4: attach interactively
+        lines.push(
+          `[ -n "$SES_ID" ] && exec ${connectCommand}; echo ${missingSessionError} >&2; exit 1`,
+        );
+        return lines.join("; ");
       }
 
       if (promptValue) {
