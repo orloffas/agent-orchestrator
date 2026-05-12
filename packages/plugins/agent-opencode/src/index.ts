@@ -227,24 +227,32 @@ function createOpenCodeAgent(): Agent {
           shellEscape(`AO:${config.sessionId}`),
           ...sharedOptions,
         ];
-        // Pass the prompt as a positional message so opencode processes it
-        // on session creation, rather than waiting for --prompt on --session
-        // connect (which is ignored for --session mode).
-        if (promptValue) {
-          runOptions.push(promptValue);
-        }
         const captureScript = buildSessionIdCaptureScript();
         const fallbackScript = buildSessionLookupScript();
         const runCommand = ["opencode", "run", ...runOptions, "--command", "true"].join(" ");
-        const connectOptions = [...sharedOptions].join(" ");
+        const connectCommand = ["opencode", "--session", `"$SES_ID"`, ...sharedOptions].join(" ");
         const missingSessionError = shellEscape(
           `failed to discover OpenCode session ID for AO:${config.sessionId}`,
         );
-        return [
+        const lines = [
+          // Step 1: create session and capture its ID
           `SES_ID=$(${runCommand} | node -e ${shellEscape(captureScript)})`,
+          // Step 2 (fallback): if step 1 failed, search by title
           `if [ -z "$SES_ID" ]; then SES_ID=$(opencode session list --format json | node -e ${shellEscape(fallbackScript)} ${shellEscape(`AO:${config.sessionId}`)}); fi`,
-          `[ -n "$SES_ID" ] && exec opencode --session "$SES_ID" ${connectOptions}; echo ${missingSessionError} >&2; exit 1`,
-        ].join("; ");
+        ];
+        // Step 3: inject the task prompt as a run message so the agent has
+        // the work description from the start (--command true consumes
+        // positional text as command arguments, so we can't pass it there).
+        if (promptValue) {
+          lines.push(
+            `[ -n "$SES_ID" ] && opencode run --session "$SES_ID" ${promptValue} >/dev/null 2>&1`,
+          );
+        }
+        // Step 4: attach interactively
+        lines.push(
+          `[ -n "$SES_ID" ] && exec ${connectCommand}; echo ${missingSessionError} >&2; exit 1`,
+        );
+        return lines.join("; ");
       }
 
       if (promptValue) {
