@@ -181,7 +181,14 @@ export function SettingsPanel({
                     Status
                   </h3>
                   <div className="space-y-1.5">
-                    <InfoRow label="Project" value={projectName ?? "All projects"} />
+                    <InfoRow
+                      label="Project"
+                      value={
+                        projectId
+                          ? `${projectName ?? projectId} (${projectId})`
+                          : "All projects"
+                      }
+                    />
                     <InfoRow label="Active sessions" value={String(stats.totalSessions)} />
                     <InfoRow label="Working" value={String(stats.workingSessions)} />
                     <InfoRow label="Open PRs" value={String(stats.openPRs)} />
