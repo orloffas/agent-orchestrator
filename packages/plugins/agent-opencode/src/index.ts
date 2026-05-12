@@ -252,7 +252,7 @@ function createOpenCodeAgent(): Agent {
         lines.push(
           `[ -n "$SES_ID" ] && exec ${connectCommand}; echo ${missingSessionError} >&2; exit 1`,
         );
-        return lines.join("; ");
+        return lines.join("\n");
       }
 
       if (promptValue) {
