@@ -73,6 +73,11 @@ function buildSessionIdCaptureScript(): string {
   const script = `
 let buffer = '';
 let captured = null;
+function extractId(obj) {
+  const sid = obj?.session_id || obj?.sessionID;
+  if (typeof sid === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(sid)) return sid;
+  return null;
+}
 process.stdin.on('data', chunk => {
   buffer += chunk;
   const lines = buffer.split('\\n');
@@ -81,21 +86,11 @@ process.stdin.on('data', chunk => {
     if (captured) continue;
     const trimmed = line.trim();
     if (!trimmed) continue;
-    try {
-      const obj = JSON.parse(trimmed);
-      if (obj && typeof obj.session_id === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(obj.session_id)) {
-        captured = obj.session_id;
-      }
-    } catch {}
+    try { captured = extractId(JSON.parse(trimmed)); } catch {}
   }
 }).on('end', () => {
-  if (buffer.trim()) {
-    try {
-      const obj = JSON.parse(buffer.trim());
-      if (obj && typeof obj.session_id === 'string' && /^ses_[A-Za-z0-9_-]+$/.test(obj.session_id)) {
-        captured = obj.session_id;
-      }
-    } catch {}
+  if (!captured && buffer.trim()) {
+    try { captured = extractId(JSON.parse(buffer.trim())); } catch {}
   }
   if (captured) {
     process.stdout.write(captured);
